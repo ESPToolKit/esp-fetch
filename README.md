@@ -27,12 +27,12 @@ const char* URL = "https://httpbin.org/post";
 
 void setup() {
     Serial.begin(115200);
-    fetch.init({
-        .maxConcurrentRequests = 3,
-        .workerStackWords = 6144,
-        .workerPriority = 4,
-        .defaultTimeoutMs = 12000,
-    });
+    FetchConfig cfg;
+    cfg.maxConcurrentRequests = 3;
+    cfg.workerStackWords = 6144;
+    cfg.workerPriority = 4;
+    cfg.defaultTimeoutMs = 12000;
+    fetch.init(cfg);
 
     JsonDocument payload;
     payload["hello"] = "world";

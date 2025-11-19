@@ -10,12 +10,12 @@ void setup() {
     Serial.begin(115200);
     delay(200);
 
-    fetch.init({
-        .maxConcurrentRequests = 2,
-        .workerStackWords = 6144,
-        .workerPriority = 4,
-        .defaultTimeoutMs = 12000,
-    });
+    FetchConfig cfg;
+    cfg.maxConcurrentRequests = 2;
+    cfg.workerStackWords = 6144;
+    cfg.workerPriority = 4;
+    cfg.defaultTimeoutMs = 12000;
+    fetch.init(cfg);
 
     JsonDocument payload;
     payload["hello"] = "world";
