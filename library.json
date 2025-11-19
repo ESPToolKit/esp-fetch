@@ -1,0 +1,43 @@
+{
+  "name": "ESPFetch",
+  "version": "1.0.0",
+  "description": "Async HTTP helper for ESP32 firmware with JsonDocument results",
+  "keywords": [
+    "esp32",
+    "arduino",
+    "http",
+    "fetch",
+    "async"
+  ],
+  "homepage": "https://github.com/ESPToolKit/esp-fetch",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ESPToolKit/esp-fetch.git"
+  },
+  "license": "MIT",
+  "authors": [
+    {
+      "name": "zekageri"
+    }
+  ],
+  "frameworks": [
+    "arduino"
+  ],
+  "platforms": [
+    "espressif32"
+  ],
+  "dependencies": [
+    {
+      "name": "ArduinoJson",
+      "version": ">=7.0.0"
+    }
+  ],
+  "headers": [
+    "ESPFetch.h"
+  ],
+  "build": {
+    "flags": [
+      "-std=gnu++17"
+    ]
+  }
+}
