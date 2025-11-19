@@ -61,7 +61,8 @@ jobs:
                 --board ${{ matrix.board }} \
                 --lib="." \
                 --project-option "build_unflags=-std=gnu++11" \
-                --project-option "build_flags=-std=gnu++17"
+                --project-option "build_flags=-std=gnu++17" \
+                --project-option "lib_deps=ArduinoJson@>=7.0.0"
             fi
           done
 
