@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 #include <utility>
+#include <atomic>
 
 extern "C" {
 #include "esp_http_client.h"
@@ -102,5 +103,6 @@ class ESPFetch {
 
     FetchConfig _config{};
     bool _initialized = false;
+    std::atomic<size_t> _activeTasks{0};
     SemaphoreHandle_t _slotSemaphore = nullptr;
 };

@@ -94,11 +94,22 @@ bool ESPFetch::init(const FetchConfig &config) {
 }
 
 void ESPFetch::deinit() {
+    _initialized = false;
+
+    while (_activeTasks.load(std::memory_order_acquire) > 0) {
+#if defined(INCLUDE_xTaskGetSchedulerState) && (INCLUDE_xTaskGetSchedulerState == 1)
+        if (xTaskGetSchedulerState() == taskSCHEDULER_NOT_STARTED) {
+            break;
+        }
+#endif
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    _activeTasks.store(0, std::memory_order_release);
+
     if (_slotSemaphore) {
         vSemaphoreDelete(_slotSemaphore);
         _slotSemaphore = nullptr;
     }
-    _initialized = false;
 }
 
 bool ESPFetch::get(const char *url, FetchCallback callback, const FetchRequestOptions &options) {
@@ -245,17 +256,22 @@ bool ESPFetch::enqueueRequest(const std::string &url,
         return false;
     }
 
+    _activeTasks.fetch_add(1, std::memory_order_acq_rel);
+
     TaskHandle_t handle = nullptr;
+    FetchJob *jobPtr = job.release();
     BaseType_t res =
         xTaskCreatePinnedToCore(&ESPFetch::requestTask,
                                 "esp-fetch",
                                 stackSize,
-                                job.release(),
+                                jobPtr,
                                 _config.priority,
                                 &handle,
                                 _config.coreId);
     if (res != pdPASS) {
         ESP_LOGE(TAG, "Failed to spawn fetch task");
+        _activeTasks.fetch_sub(1, std::memory_order_acq_rel);
+        delete jobPtr;
         xSemaphoreGive(_slotSemaphore);
         return false;
     }
@@ -284,6 +300,9 @@ JsonDocument ESPFetch::waitForResult(const std::shared_ptr<SyncHandle> &handle, 
 void ESPFetch::requestTask(void *arg) {
     auto job = std::unique_ptr<FetchJob>(static_cast<FetchJob *>(arg));
     if (!job || !job->owner) {
+        if (job && job->owner) {
+            job->owner->_activeTasks.fetch_sub(1, std::memory_order_acq_rel);
+        }
         vTaskDelete(nullptr);
         return;
     }
@@ -389,6 +408,8 @@ void ESPFetch::runJob(std::unique_ptr<FetchJob> job) {
     if (_slotSemaphore) {
         xSemaphoreGive(_slotSemaphore);
     }
+
+    _activeTasks.fetch_sub(1, std::memory_order_acq_rel);
 }
 
 JsonDocument ESPFetch::buildResult(const FetchJob &job, const FetchResponse &response) const {
