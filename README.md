@@ -29,8 +29,8 @@ void setup() {
     Serial.begin(115200);
     FetchConfig cfg;
     cfg.maxConcurrentRequests = 3;
-    cfg.workerStackWords = 6144;
-    cfg.workerPriority = 4;
+    cfg.stackSize = 6144;
+    cfg.priority = 4;
     cfg.defaultTimeoutMs = 12000;
     fetch.init(cfg);
 
@@ -128,11 +128,13 @@ All APIs resolve to the same `JsonDocument` shape:
 | Field | Meaning |
 | --- | --- |
 | `maxConcurrentRequests` | Counting semaphore depth; returns `false` when no slot is available. |
-| `workerStackWords` / `workerPriority` / `coreId` | `xTaskCreatePinnedToCore` arguments for each fetch worker. |
+| `stackSize` / `priority` / `coreId` | `xTaskCreatePinnedToCore` arguments for each fetch worker. |
 | `defaultTimeoutMs` | Used when `timeoutMs` is unset. |
 | `maxBodyBytes` / `maxHeaderBytes` | Global truncation defaults. |
 | `slotAcquireTicks` | How long to wait for a semaphore slot (0 = fail fast). |
 | `skipTlsCommonNameCheck`, `followRedirects`, `userAgent`, `defaultContentType` | Global protocol defaults. |
+
+Stack sizes are expressed in bytes.
 
 ## Gotchas
 - Call `fetch.init()` exactly once before starting requests. The destructor automatically calls `deinit`, but avoid tearing down the semaphore while workers are running.

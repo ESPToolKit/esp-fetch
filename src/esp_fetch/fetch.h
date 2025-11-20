@@ -34,8 +34,8 @@ struct FetchRequestOptions {
 
 struct FetchConfig {
     size_t maxConcurrentRequests = 4;
-    uint32_t workerStackWords = 6144;
-    UBaseType_t workerPriority = 4;
+    size_t stackSize = 6144 * sizeof(StackType_t);
+    UBaseType_t priority = 4;
     BaseType_t coreId = tskNO_AFFINITY;
     uint32_t defaultTimeoutMs = 15000;
     size_t maxBodyBytes = 16384;

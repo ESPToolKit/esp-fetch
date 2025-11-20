@@ -238,13 +238,20 @@ bool ESPFetch::enqueueRequest(const std::string &url,
             : std::min(job->bodyLimit, static_cast<size_t>(1024));
     job->response.body.reserve(reserveBytes);
 
+    size_t stackSize = _config.stackSize;
+    if (stackSize == 0) {
+        ESP_LOGE(TAG, "Invalid stack size for fetch worker");
+        xSemaphoreGive(_slotSemaphore);
+        return false;
+    }
+
     TaskHandle_t handle = nullptr;
     BaseType_t res =
         xTaskCreatePinnedToCore(&ESPFetch::requestTask,
                                 "esp-fetch",
-                                _config.workerStackWords,
+                                stackSize,
                                 job.release(),
-                                _config.workerPriority,
+                                _config.priority,
                                 &handle,
                                 _config.coreId);
     if (res != pdPASS) {

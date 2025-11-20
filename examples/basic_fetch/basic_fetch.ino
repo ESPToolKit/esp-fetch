@@ -12,8 +12,8 @@ void setup() {
 
     FetchConfig cfg;
     cfg.maxConcurrentRequests = 2;
-    cfg.workerStackWords = 6144;
-    cfg.workerPriority = 4;
+    cfg.stackSize = 6144;
+    cfg.priority = 4;
     cfg.defaultTimeoutMs = 12000;
     fetch.init(cfg);
 
