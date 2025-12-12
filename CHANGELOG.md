@@ -10,7 +10,7 @@ All notable changes to this project will be documented in this file.
 ### Documentation
 - Flesh out troubleshooting tips for TLS and large bodies.
 
-## [1.0.0] - 2025-09-16
+## [1.0.0] - 2025-11-19
 
 ### Added
 - Initial ESPFetch release with async + sync (`JsonDocument`) APIs for GET and POST.
