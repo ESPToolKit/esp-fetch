@@ -59,7 +59,7 @@ struct StreamResult {
     size_t receivedBytes = 0;
 };
 
-using FetchChunkCallback = std::function<void(const void *data, size_t size)>;
+using FetchChunkCallback = std::function<bool(const void *data, size_t size)>;
 using FetchStreamCallback = std::function<void(StreamResult result)>;
 
 class ESPFetch {

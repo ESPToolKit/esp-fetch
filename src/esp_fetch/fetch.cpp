@@ -78,6 +78,7 @@ struct ESPFetch::FetchJob {
     FetchChunkCallback onChunk;
     FetchStreamCallback onDone;
     size_t receivedBytes = 0;
+    esp_err_t streamAbortError = ESP_OK;
 };
 
 ESPFetch::~ESPFetch() {
@@ -341,6 +342,7 @@ bool ESPFetch::enqueueStreamRequest(const std::string &url,
     job->onChunk = std::move(onChunk);
     job->onDone = std::move(onDone);
     job->receivedBytes = 0;
+    job->streamAbortError = ESP_OK;
 
     // For streaming, default to "unlimited" unless the caller explicitly sets maxBodyBytes.
     job->bodyLimit = options.maxBodyBytes ? options.maxBodyBytes : std::numeric_limits<size_t>::max();
@@ -425,7 +427,7 @@ esp_err_t ESPFetch::handleHttpEvent(esp_http_client_event_t *event) {
 
                     if (job->bodyLimit != std::numeric_limits<size_t>::max()) {
                         if (job->receivedBytes >= job->bodyLimit) {
-                            job->response.error = ESP_ERR_INVALID_SIZE;
+                            job->streamAbortError = ESP_ERR_INVALID_SIZE;
                             return ESP_FAIL;
                         }
                         const size_t remaining = job->bodyLimit - job->receivedBytes;
@@ -433,13 +435,20 @@ esp_err_t ESPFetch::handleHttpEvent(esp_http_client_event_t *event) {
                     }
 
                     if (toSend > 0 && job->onChunk) {
-                        job->onChunk(event->data, toSend);
+                        const bool keepGoing = job->onChunk(event->data, toSend);
+                        if (!keepGoing) {
+                            // Caller requested abort; stop the stream and propagate a deterministic error.
+                            if (job->streamAbortError == ESP_OK) {
+                                job->streamAbortError = ESP_ERR_INVALID_STATE;
+                            }
+                            return ESP_FAIL;
+                        }
                         job->receivedBytes += toSend;
                     }
 
                     // If we had to clip the chunk, we've hit the limit and abort.
                     if (toSend < static_cast<size_t>(event->data_len)) {
-                        job->response.error = ESP_ERR_INVALID_SIZE;
+                        job->streamAbortError = ESP_ERR_INVALID_SIZE;
                         return ESP_FAIL;
                     }
                 } else {
@@ -528,6 +537,11 @@ void ESPFetch::runJob(std::unique_ptr<FetchJob> job) {
         job->response.error = esp_http_client_perform(client);
         if (job->response.error == ESP_OK) {
             job->response.statusCode = esp_http_client_get_status_code(client);
+        }
+        // Preserve intentional stream abort reason (onChunk returned false or maxBodyBytes clipping),
+        // instead of losing it to generic ESP_FAIL from esp_http_client_perform().
+        if (job->isStream && job->response.error != ESP_OK && job->streamAbortError != ESP_OK) {
+            job->response.error = job->streamAbortError;
         }
         esp_http_client_cleanup(client);
     }
