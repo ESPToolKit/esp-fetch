@@ -29,7 +29,7 @@ bool equalsIgnoreCase(const std::string &lhs, const char *rhs) {
     }
     return true;
 }
-}
+}  // namespace
 
 struct ESPFetch::FetchResponse {
     esp_err_t error = ESP_OK;
@@ -61,11 +61,23 @@ struct ESPFetch::FetchJob {
     esp_http_client_method_t method = HTTP_METHOD_GET;
     std::string body;
     FetchRequestOptions options;
+
+    // JSON mode callback (existing APIs)
     FetchCallback callback;
     std::shared_ptr<SyncHandle> syncHandle;
+
+    // Limits (used differently depending on mode)
     size_t bodyLimit = 0;
     size_t headerLimit = 0;
+
+    // Response bookkeeping
     FetchResponse response;
+
+    // Stream mode (new APIs)
+    bool isStream = false;
+    FetchChunkCallback onChunk;
+    FetchStreamCallback onDone;
+    size_t receivedBytes = 0;
 };
 
 ESPFetch::~ESPFetch() {
@@ -211,6 +223,26 @@ JsonDocument ESPFetch::post(const String &url,
     return post(url.c_str(), payload, waitTicks, options);
 }
 
+// ------------------------------
+// Stream API (new)
+// ------------------------------
+bool ESPFetch::getStream(const char *url,
+                         FetchChunkCallback onChunk,
+                         FetchStreamCallback onDone,
+                         const FetchRequestOptions &options) {
+    if (!url || !onChunk) {
+        return false;
+    }
+    return enqueueStreamRequest(url, std::move(onChunk), std::move(onDone), options);
+}
+
+bool ESPFetch::getStream(const String &url,
+                         FetchChunkCallback onChunk,
+                         FetchStreamCallback onDone,
+                         const FetchRequestOptions &options) {
+    return getStream(url.c_str(), std::move(onChunk), std::move(onDone), options);
+}
+
 bool ESPFetch::enqueueRequest(const std::string &url,
                               esp_http_client_method_t method,
                               std::string &&body,
@@ -235,6 +267,7 @@ bool ESPFetch::enqueueRequest(const std::string &url,
     job->options = options;
     job->callback = std::move(callback);
     job->syncHandle = std::move(syncHandle);
+
     job->bodyLimit = options.maxBodyBytes ? options.maxBodyBytes : _config.maxBodyBytes;
     job->headerLimit = options.maxHeaderBytes ? options.maxHeaderBytes : _config.maxHeaderBytes;
     if (job->bodyLimit == 0) {
@@ -243,11 +276,78 @@ bool ESPFetch::enqueueRequest(const std::string &url,
     if (job->headerLimit == 0) {
         job->headerLimit = std::numeric_limits<size_t>::max();
     }
+
     size_t reserveBytes =
         job->bodyLimit == std::numeric_limits<size_t>::max()
             ? static_cast<size_t>(1024)
             : std::min(job->bodyLimit, static_cast<size_t>(1024));
     job->response.body.reserve(reserveBytes);
+
+    size_t stackSize = _config.stackSize;
+    if (stackSize == 0) {
+        ESP_LOGE(TAG, "Invalid stack size for fetch worker");
+        xSemaphoreGive(_slotSemaphore);
+        return false;
+    }
+
+    _activeTasks.fetch_add(1, std::memory_order_acq_rel);
+
+    TaskHandle_t handle = nullptr;
+    FetchJob *jobPtr = job.release();
+    BaseType_t res =
+        xTaskCreatePinnedToCore(&ESPFetch::requestTask,
+                                "esp-fetch",
+                                stackSize,
+                                jobPtr,
+                                _config.priority,
+                                &handle,
+                                _config.coreId);
+    if (res != pdPASS) {
+        ESP_LOGE(TAG, "Failed to spawn fetch task");
+        _activeTasks.fetch_sub(1, std::memory_order_acq_rel);
+        delete jobPtr;
+        xSemaphoreGive(_slotSemaphore);
+        return false;
+    }
+    return true;
+}
+
+bool ESPFetch::enqueueStreamRequest(const std::string &url,
+                                    FetchChunkCallback onChunk,
+                                    FetchStreamCallback onDone,
+                                    const FetchRequestOptions &options) {
+    if (!_initialized) {
+        ESP_LOGE(TAG, "ESPFetch not initialized");
+        return false;
+    }
+
+    if (!onChunk) {
+        ESP_LOGE(TAG, "getStream requires onChunk callback");
+        return false;
+    }
+
+    if (xSemaphoreTake(_slotSemaphore, _config.slotAcquireTicks) != pdTRUE) {
+        ESP_LOGW(TAG, "No available fetch slots");
+        return false;
+    }
+
+    auto job = std::make_unique<FetchJob>();
+    job->owner = this;
+    job->url = url;
+    job->method = HTTP_METHOD_GET;
+    job->options = options;
+
+    job->isStream = true;
+    job->onChunk = std::move(onChunk);
+    job->onDone = std::move(onDone);
+    job->receivedBytes = 0;
+
+    // For streaming, default to "unlimited" unless the caller explicitly sets maxBodyBytes.
+    job->bodyLimit = options.maxBodyBytes ? options.maxBodyBytes : std::numeric_limits<size_t>::max();
+    job->headerLimit = options.maxHeaderBytes ? options.maxHeaderBytes : _config.maxHeaderBytes;
+    if (job->headerLimit == 0) {
+        job->headerLimit = std::numeric_limits<size_t>::max();
+    }
 
     size_t stackSize = _config.stackSize;
     if (stackSize == 0) {
@@ -315,20 +415,48 @@ esp_err_t ESPFetch::handleHttpEvent(esp_http_client_event_t *event) {
         return ESP_OK;
     }
     auto *job = static_cast<FetchJob *>(event->user_data);
+
     switch (event->event_id) {
         case HTTP_EVENT_ON_DATA:
             if (event->data && event->data_len > 0) {
-                size_t available =
-                    job->response.body.size() < job->bodyLimit ? (job->bodyLimit - job->response.body.size()) : 0;
-                size_t copyLen = std::min(available, static_cast<size_t>(event->data_len));
-                if (copyLen > 0) {
-                    job->response.body.append(static_cast<const char *>(event->data), copyLen);
-                }
-                if (copyLen < static_cast<size_t>(event->data_len)) {
-                    job->response.bodyTruncated = true;
+                // Stream mode: do NOT buffer body; forward chunks directly.
+                if (job->isStream) {
+                    size_t toSend = static_cast<size_t>(event->data_len);
+
+                    if (job->bodyLimit != std::numeric_limits<size_t>::max()) {
+                        if (job->receivedBytes >= job->bodyLimit) {
+                            job->response.error = ESP_ERR_INVALID_SIZE;
+                            return ESP_FAIL;
+                        }
+                        const size_t remaining = job->bodyLimit - job->receivedBytes;
+                        toSend = std::min(toSend, remaining);
+                    }
+
+                    if (toSend > 0 && job->onChunk) {
+                        job->onChunk(event->data, toSend);
+                        job->receivedBytes += toSend;
+                    }
+
+                    // If we had to clip the chunk, we've hit the limit and abort.
+                    if (toSend < static_cast<size_t>(event->data_len)) {
+                        job->response.error = ESP_ERR_INVALID_SIZE;
+                        return ESP_FAIL;
+                    }
+                } else {
+                    // JSON mode (existing): buffer into response.body with limit/truncation.
+                    size_t available =
+                        job->response.body.size() < job->bodyLimit ? (job->bodyLimit - job->response.body.size()) : 0;
+                    size_t copyLen = std::min(available, static_cast<size_t>(event->data_len));
+                    if (copyLen > 0) {
+                        job->response.body.append(static_cast<const char *>(event->data), copyLen);
+                    }
+                    if (copyLen < static_cast<size_t>(event->data_len)) {
+                        job->response.bodyTruncated = true;
+                    }
                 }
             }
             break;
+
         case HTTP_EVENT_ON_HEADER:
             if (event->header_key && event->header_value) {
                 size_t projected = 0;
@@ -343,6 +471,7 @@ esp_err_t ESPFetch::handleHttpEvent(esp_http_client_event_t *event) {
                 }
             }
             break;
+
         default:
             break;
     }
@@ -382,13 +511,16 @@ void ESPFetch::runJob(std::unique_ptr<FetchJob> job) {
         if (_config.userAgent && !hasHeader("User-Agent")) {
             esp_http_client_set_header(client, "User-Agent", _config.userAgent);
         }
+
         const char *contentType = job->options.contentType ? job->options.contentType : _config.defaultContentType;
-        if (job->method == HTTP_METHOD_POST && contentType && !hasHeader("Content-Type")) {
+        if (!job->isStream && job->method == HTTP_METHOD_POST && contentType && !hasHeader("Content-Type")) {
             esp_http_client_set_header(client, "Content-Type", contentType);
         }
+
         for (const auto &header : job->options.headers) {
             esp_http_client_set_header(client, header.name.c_str(), header.value.c_str());
         }
+
         if (!job->body.empty()) {
             esp_http_client_set_post_field(client, job->body.c_str(), job->body.length());
         }
@@ -402,8 +534,18 @@ void ESPFetch::runJob(std::unique_ptr<FetchJob> job) {
 
     job->response.durationUs = esp_timer_get_time() - start;
 
-    JsonDocument result = buildResult(*job, job->response);
-    deliverResult(job, result);
+    if (job->isStream) {
+        StreamResult r;
+        r.error = job->response.error;
+        r.statusCode = job->response.statusCode;
+        r.receivedBytes = job->receivedBytes;
+        if (job->onDone) {
+            job->onDone(r);
+        }
+    } else {
+        JsonDocument result = buildResult(*job, job->response);
+        deliverResult(job, result);
+    }
 
     if (_slotSemaphore) {
         xSemaphoreGive(_slotSemaphore);

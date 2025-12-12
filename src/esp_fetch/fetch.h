@@ -50,6 +50,18 @@ struct FetchConfig {
 
 using FetchCallback = std::function<void(JsonDocument result)>;
 
+// ------------------------------
+// Streaming (binary/any-content)
+// ------------------------------
+struct StreamResult {
+    esp_err_t error = ESP_OK;
+    int statusCode = 0;
+    size_t receivedBytes = 0;
+};
+
+using FetchChunkCallback = std::function<void(const void *data, size_t size)>;
+using FetchStreamCallback = std::function<void(StreamResult result)>;
+
 class ESPFetch {
    public:
     ESPFetch() = default;
@@ -81,6 +93,16 @@ class ESPFetch {
                       TickType_t waitTicks,
                       const FetchRequestOptions &options = FetchRequestOptions{});
 
+    // Stream download (binary / any kind). No JSON handling.
+    bool getStream(const char *url,
+                   FetchChunkCallback onChunk,
+                   FetchStreamCallback onDone = nullptr,
+                   const FetchRequestOptions &options = FetchRequestOptions{});
+    bool getStream(const String &url,
+                   FetchChunkCallback onChunk,
+                   FetchStreamCallback onDone = nullptr,
+                   const FetchRequestOptions &options = FetchRequestOptions{});
+
    private:
     struct FetchJob;
     struct FetchResponse;
@@ -92,6 +114,12 @@ class ESPFetch {
                         FetchCallback callback,
                         std::shared_ptr<SyncHandle> syncHandle,
                         const FetchRequestOptions &options);
+
+    bool enqueueStreamRequest(const std::string &url,
+                              FetchChunkCallback onChunk,
+                              FetchStreamCallback onDone,
+                              const FetchRequestOptions &options);
+
     JsonDocument waitForResult(const std::shared_ptr<SyncHandle> &handle, TickType_t waitTicks) const;
 
     static void requestTask(void *arg);
