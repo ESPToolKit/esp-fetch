@@ -1,4 +1,3 @@
-````md
 # ESPFetch
 
 ESPFetch is a lightweight HTTP helper that keeps ESP32 firmware **asynchronous-first**.
@@ -306,6 +305,3 @@ MIT — see [LICENSE.md](LICENSE.md)
 * Discord: [https://discord.gg/WG8sSqAy](https://discord.gg/WG8sSqAy)
 * Support: [https://ko-fi.com/esptoolkit](https://ko-fi.com/esptoolkit)
 * Website: [https://www.esptoolkit.hu/](https://www.esptoolkit.hu/)
-
-```
-```
