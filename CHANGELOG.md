@@ -13,6 +13,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - Normalize malformed `http:/` or `https:/` URLs to `http://`/`https://` to avoid DNS failures with parsed hosts like `:example.com`.
+- Collapse extra slashes (`https:///`) and strip a leading `://:` host typo before handing URLs to esp_http_client.
 
 ### Notes
 - Streaming requests bypass all body buffering and ArduinoJson processing.

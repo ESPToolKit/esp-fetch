@@ -283,7 +283,8 @@ struct StreamResult {
 * Sync APIs still spawn worker tasks internally
 * No cancellation once a request has started
 * Skipping TLS CN checks is unsafe for production
-* URLs must be absolute (`http://` or `https://`); malformed schemes like `https:/` are normalized and logged
+* URLs must be absolute (`http://` or `https://`); malformed schemes like `https:/` or `https:///` are normalized and logged
+* A leading `://:` host typo is normalized (e.g., `https://:example.com` -> `https://example.com`)
 
 ---
 

@@ -30,6 +30,23 @@ bool equalsIgnoreCase(const std::string &lhs, const char *rhs) {
     return true;
 }
 
+bool startsWithIgnoreCase(const std::string &value, const char *prefix) {
+    if (!prefix) {
+        return false;
+    }
+    const size_t prefixLen = std::strlen(prefix);
+    if (value.size() < prefixLen) {
+        return false;
+    }
+    for (size_t i = 0; i < prefixLen; ++i) {
+        if (std::tolower(static_cast<unsigned char>(value[i])) !=
+            std::tolower(static_cast<unsigned char>(prefix[i]))) {
+            return false;
+        }
+    }
+    return true;
+}
+
 std::string trimUrl(const std::string &value) {
     size_t start = 0;
     while (start < value.size() && std::isspace(static_cast<unsigned char>(value[start]))) {
@@ -44,7 +61,7 @@ std::string trimUrl(const std::string &value) {
 
 bool normalizeScheme(std::string &url, const char *scheme) {
     const size_t schemeLen = std::strlen(scheme);
-    if (url.size() <= schemeLen || url.compare(0, schemeLen, scheme) != 0) {
+    if (url.size() <= schemeLen || !startsWithIgnoreCase(url, scheme)) {
         return false;
     }
     if (url[schemeLen] != ':') {
@@ -53,11 +70,15 @@ bool normalizeScheme(std::string &url, const char *scheme) {
 
     size_t slashPos = schemeLen + 1;
     size_t slashCount = 0;
-    while (slashPos + slashCount < url.size() && url[slashPos + slashCount] == '/' && slashCount < 2) {
+    while (slashPos + slashCount < url.size() && url[slashPos + slashCount] == '/') {
         ++slashCount;
     }
-    if (slashCount >= 2) {
+    if (slashCount == 2) {
         return false;
+    }
+    if (slashCount > 2) {
+        url.erase(slashPos + 2, slashCount - 2);
+        return true;
     }
     if (slashCount == 1) {
         url.insert(slashPos, "/");
@@ -67,11 +88,28 @@ bool normalizeScheme(std::string &url, const char *scheme) {
     return true;
 }
 
+bool stripLeadingHostColon(std::string &url) {
+    const size_t schemePos = url.find("://");
+    if (schemePos == std::string::npos) {
+        return false;
+    }
+    if (!startsWithIgnoreCase(url, "http") && !startsWithIgnoreCase(url, "https")) {
+        return false;
+    }
+    const size_t hostPos = schemePos + 3;
+    if (hostPos >= url.size() || url[hostPos] != ':') {
+        return false;
+    }
+    url.erase(hostPos, 1);
+    return true;
+}
+
 std::string normalizeUrl(const std::string &url) {
     std::string normalized = trimUrl(url);
     bool changed = false;
     changed = normalizeScheme(normalized, "https") || changed;
     changed = normalizeScheme(normalized, "http") || changed;
+    changed = stripLeadingHostColon(normalized) || changed;
     if (changed) {
         ESP_LOGW(TAG, "Normalized URL to %s", normalized.c_str());
     }
