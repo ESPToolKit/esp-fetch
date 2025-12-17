@@ -11,12 +11,16 @@ All notable changes to this project will be documented in this file.
 - Per-request streaming size limits via `FetchRequestOptions::maxBodyBytes` (default: unlimited for streams).
 - Hooks for retries/backoff strategies on top of the existing async API.
 
+### Fixed
+- Normalize malformed `http:/` or `https:/` URLs to `http://`/`https://` to avoid DNS failures with parsed hosts like `:example.com`.
+
 ### Notes
 - Streaming requests bypass all body buffering and ArduinoJson processing.
 - Exceeding `maxBodyBytes` aborts the transfer with `ESP_ERR_INVALID_SIZE`.
 
 ### Documentation
 - Added usage examples and API reference for streaming downloads.
+- Clarified that stream chunk callbacks return `bool` to continue or abort.
 - Flesh out troubleshooting tips for TLS and large bodies.
 
 

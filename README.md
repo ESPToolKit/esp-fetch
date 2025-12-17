@@ -136,9 +136,10 @@ bool started = fetch.getStream(
     "https://example.com/firmware.bin",
 
     // Called for every received chunk
-    [](const void* data, size_t size) {
+    [](const void* data, size_t size) -> bool {
         // Write directly to flash, file, or buffer
         // file.write((const uint8_t*)data, size);
+        return true; // return false to abort the transfer
     },
 
     // Called once when the transfer finishes
@@ -238,7 +239,7 @@ bool getStream(const String& url,
 
 ```cpp
 using FetchChunkCallback =
-    std::function<void(const void* data, size_t size)>;
+    std::function<bool(const void* data, size_t size)>;
 
 using FetchStreamCallback =
     std::function<void(StreamResult result)>;
@@ -282,6 +283,7 @@ struct StreamResult {
 * Sync APIs still spawn worker tasks internally
 * No cancellation once a request has started
 * Skipping TLS CN checks is unsafe for production
+* URLs must be absolute (`http://` or `https://`); malformed schemes like `https:/` are normalized and logged
 
 ---
 

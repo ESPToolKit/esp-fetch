@@ -29,6 +29,54 @@ bool equalsIgnoreCase(const std::string &lhs, const char *rhs) {
     }
     return true;
 }
+
+std::string trimUrl(const std::string &value) {
+    size_t start = 0;
+    while (start < value.size() && std::isspace(static_cast<unsigned char>(value[start]))) {
+        ++start;
+    }
+    size_t end = value.size();
+    while (end > start && std::isspace(static_cast<unsigned char>(value[end - 1]))) {
+        --end;
+    }
+    return value.substr(start, end - start);
+}
+
+bool normalizeScheme(std::string &url, const char *scheme) {
+    const size_t schemeLen = std::strlen(scheme);
+    if (url.size() <= schemeLen || url.compare(0, schemeLen, scheme) != 0) {
+        return false;
+    }
+    if (url[schemeLen] != ':') {
+        return false;
+    }
+
+    size_t slashPos = schemeLen + 1;
+    size_t slashCount = 0;
+    while (slashPos + slashCount < url.size() && url[slashPos + slashCount] == '/' && slashCount < 2) {
+        ++slashCount;
+    }
+    if (slashCount >= 2) {
+        return false;
+    }
+    if (slashCount == 1) {
+        url.insert(slashPos, "/");
+        return true;
+    }
+    url.insert(slashPos, "//");
+    return true;
+}
+
+std::string normalizeUrl(const std::string &url) {
+    std::string normalized = trimUrl(url);
+    bool changed = false;
+    changed = normalizeScheme(normalized, "https") || changed;
+    changed = normalizeScheme(normalized, "http") || changed;
+    if (changed) {
+        ESP_LOGW(TAG, "Normalized URL to %s", normalized.c_str());
+    }
+    return normalized;
+}
 }  // namespace
 
 struct ESPFetch::FetchResponse {
@@ -262,7 +310,7 @@ bool ESPFetch::enqueueRequest(const std::string &url,
 
     auto job = std::make_unique<FetchJob>();
     job->owner = this;
-    job->url = url;
+    job->url = normalizeUrl(url);
     job->method = method;
     job->body = std::move(body);
     job->options = options;
@@ -334,7 +382,7 @@ bool ESPFetch::enqueueStreamRequest(const std::string &url,
 
     auto job = std::make_unique<FetchJob>();
     job->owner = this;
-    job->url = url;
+    job->url = normalizeUrl(url);
     job->method = HTTP_METHOD_GET;
     job->options = options;
 
