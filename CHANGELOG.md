@@ -22,6 +22,7 @@ All notable changes to this project will be documented in this file.
 ### Documentation
 - Added usage examples and API reference for streaming downloads.
 - Clarified that stream chunk callbacks return `bool` to continue or abort.
+- Documented that DNS must be configured before starting requests; `getaddrinfo()` failures indicate missing DNS.
 - Flesh out troubleshooting tips for TLS and large bodies.
 
 

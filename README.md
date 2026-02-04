@@ -285,6 +285,7 @@ struct StreamResult {
 * Skipping TLS CN checks is unsafe for production
 * URLs must be absolute (`http://` or `https://`); malformed schemes like `https:/` or `https:///` are normalized and logged
 * A leading `://:` host typo is normalized (e.g., `https://:example.com` -> `https://example.com`)
+* DNS must be configured before requests (WiFi/ETH); `esp-tls` `getaddrinfo()` failures (e.g., 202) usually mean missing DNS setup
 
 ---
 
