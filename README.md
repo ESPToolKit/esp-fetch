@@ -29,6 +29,7 @@ This design allows ESPFetch to handle both typical REST APIs and large binary do
 - Zero-copy streaming (no body buffering, no JSON parsing)
 - Configurable concurrency via counting semaphore
 - Per-request and global limits for body and header sizes
+- Optional `FetchConfig::usePSRAMBuffers` to prefer PSRAM-backed ESPFetch-owned buffers via `ESPBufferManager` (JSON response body/headers, request body strings, and copied request headers; safe fallback on non-PSRAM boards)
 - Built on ESP-IDF `esp_http_client` (TLS, redirects, auth, streaming)
 - Detailed result metadata (status, timing, truncation, transport errors)
 - ArduinoJson v7 only (no Dynamic/Static split)
@@ -51,6 +52,7 @@ void setup() {
     cfg.stackSize = 6144;
     cfg.priority = 4;
     cfg.defaultTimeoutMs = 12000;
+    cfg.usePSRAMBuffers = true; // optional: best-effort PSRAM for ESPFetch-owned request/response buffers
 
     fetch.init(cfg);
 }
@@ -286,6 +288,7 @@ struct StreamResult {
 * URLs must be absolute (`http://` or `https://`); malformed schemes like `https:/` or `https:///` are normalized and logged
 * A leading `://:` host typo is normalized (e.g., `https://:example.com` -> `https://example.com`)
 * DNS must be configured before requests (WiFi/ETH); `esp-tls` `getaddrinfo()` failures (e.g., 202) usually mean missing DNS setup
+* `usePSRAMBuffers` affects ESPFetch-owned request/response string/header buffers; ArduinoJson `JsonDocument` allocations still follow ArduinoJson's own allocator behavior
 
 ---
 

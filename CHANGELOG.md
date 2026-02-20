@@ -10,6 +10,7 @@ All notable changes to this project will be documented in this file.
 - Completion callback with `StreamResult` containing transport error, HTTP status code, and total received byte count.
 - Per-request streaming size limits via `FetchRequestOptions::maxBodyBytes` (default: unlimited for streams).
 - Hooks for retries/backoff strategies on top of the existing async API.
+- Added `FetchConfig::usePSRAMBuffers` and routed JSON-mode response body/header storage plus request-body/copied-request-header storage through `ESPBufferManager` with automatic fallback to normal heap paths.
 
 ### Fixed
 - Normalize malformed `http:/` or `https:/` URLs to `http://`/`https://` to avoid DNS failures with parsed hosts like `:example.com`.
@@ -18,6 +19,7 @@ All notable changes to this project will be documented in this file.
 ### Notes
 - Streaming requests bypass all body buffering and ArduinoJson processing.
 - Exceeding `maxBodyBytes` aborts the transfer with `ESP_ERR_INVALID_SIZE`.
+- ArduinoJson `JsonDocument` allocations remain managed by ArduinoJson allocators; `usePSRAMBuffers` applies to ESPFetch-owned buffers.
 
 ### Documentation
 - Added usage examples and API reference for streaming downloads.

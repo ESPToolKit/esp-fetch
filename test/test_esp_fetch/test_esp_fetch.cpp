@@ -18,6 +18,15 @@ static void test_init_and_deinit_cycle_updates_initialized_flag() {
     TEST_ASSERT_FALSE(fetch.initialized());
 }
 
+static void test_init_accepts_psram_buffer_toggle() {
+    ESPFetch fetch;
+    FetchConfig cfg{};
+    cfg.usePSRAMBuffers = true;
+    TEST_ASSERT_TRUE(fetch.init(cfg));
+    TEST_ASSERT_TRUE(fetch.initialized());
+    fetch.deinit();
+}
+
 static void test_async_get_requires_initialization() {
     ESPFetch fetch;
     volatile bool invoked = false;
@@ -74,6 +83,7 @@ void setup() {
     UNITY_BEGIN();
     RUN_TEST(test_init_rejects_zero_concurrency);
     RUN_TEST(test_init_and_deinit_cycle_updates_initialized_flag);
+    RUN_TEST(test_init_accepts_psram_buffer_toggle);
     RUN_TEST(test_async_get_requires_initialization);
     RUN_TEST(test_sync_get_reports_error_when_not_initialized);
     RUN_TEST(test_sync_get_requires_url);

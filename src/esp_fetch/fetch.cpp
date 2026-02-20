@@ -1,4 +1,5 @@
 #include "esp_fetch/fetch.h"
+#include "esp_fetch/fetch_allocator.h"
 
 #include <algorithm>
 #include <cctype>
@@ -13,7 +14,19 @@ extern "C" {
 namespace {
 constexpr const char *TAG = "ESPFetch";
 
-bool equalsIgnoreCase(const std::string &lhs, const char *rhs) {
+struct InternalFetchHeader {
+    FetchString name;
+    FetchString value;
+
+    InternalFetchHeader(const char *headerName, const char *headerValue, const FetchAllocator<char> &allocator)
+        : name(headerName ? headerName : "", allocator),
+          value(headerValue ? headerValue : "", allocator) {}
+};
+
+using InternalFetchHeaderVector = FetchVector<InternalFetchHeader>;
+
+template <typename TString>
+bool equalsIgnoreCase(const TString &lhs, const char *rhs) {
     if (!rhs) {
         return false;
     }
@@ -29,6 +42,44 @@ bool equalsIgnoreCase(const std::string &lhs, const char *rhs) {
     }
     return true;
 }
+
+struct InternalFetchRequestOptions {
+    explicit InternalFetchRequestOptions(bool usePSRAMBuffers = false)
+        : charAllocator(usePSRAMBuffers),
+          headerAllocator(usePSRAMBuffers),
+          headers(headerAllocator) {}
+
+    FetchAllocator<char> charAllocator;
+    FetchAllocator<InternalFetchHeader> headerAllocator;
+
+    uint32_t timeoutMs = 0;
+    size_t maxBodyBytes = 0;
+    size_t maxHeaderBytes = 0;
+    bool skipTlsCommonNameCheck = false;
+    bool allowRedirects = true;
+    InternalFetchHeaderVector headers;
+    const char *contentType = nullptr;
+};
+
+struct FetchStringWriter {
+    explicit FetchStringWriter(FetchString &target) : target_(target) {}
+
+    size_t write(uint8_t value) {
+        target_.push_back(static_cast<char>(value));
+        return 1;
+    }
+
+    size_t write(const uint8_t *buffer, size_t size) {
+        if (!buffer || size == 0) {
+            return 0;
+        }
+        target_.append(reinterpret_cast<const char *>(buffer), size);
+        return size;
+    }
+
+  private:
+    FetchString &target_;
+};
 
 bool startsWithIgnoreCase(const std::string &value, const char *prefix) {
     if (!prefix) {
@@ -118,10 +169,18 @@ std::string normalizeUrl(const std::string &url) {
 }  // namespace
 
 struct ESPFetch::FetchResponse {
+    explicit FetchResponse(bool usePSRAMBuffers = false)
+        : charAllocator(usePSRAMBuffers),
+          headerAllocator(usePSRAMBuffers),
+          body(charAllocator),
+          headers(headerAllocator) {}
+
     esp_err_t error = ESP_OK;
     int statusCode = 0;
-    std::string body;
-    std::vector<FetchHeader> headers;
+    FetchAllocator<char> charAllocator;
+    FetchAllocator<InternalFetchHeader> headerAllocator;
+    FetchString body;
+    InternalFetchHeaderVector headers;
     bool bodyTruncated = false;
     bool headersTruncated = false;
     int64_t durationUs = 0;
@@ -142,11 +201,19 @@ struct ESPFetch::SyncHandle {
 };
 
 struct ESPFetch::FetchJob {
+    explicit FetchJob(bool usePSRAMBuffers = false)
+        : stringAllocator(usePSRAMBuffers),
+          url(stringAllocator),
+          body(stringAllocator),
+          requestOptions(usePSRAMBuffers),
+          response(usePSRAMBuffers) {}
+
     ESPFetch *owner = nullptr;
-    std::string url;
+    FetchAllocator<char> stringAllocator;
+    FetchString url;
     esp_http_client_method_t method = HTTP_METHOD_GET;
-    std::string body;
-    FetchRequestOptions options;
+    FetchString body;
+    InternalFetchRequestOptions requestOptions;
 
     // JSON mode callback (existing APIs)
     FetchCallback callback;
@@ -215,7 +282,13 @@ bool ESPFetch::get(const char *url, FetchCallback callback, const FetchRequestOp
     if (!url) {
         return false;
     }
-    return enqueueRequest(url, HTTP_METHOD_GET, std::string{}, std::move(callback), nullptr, options);
+    return enqueueRequest(
+        url,
+        HTTP_METHOD_GET,
+        FetchString{FetchAllocator<char>(_config.usePSRAMBuffers)},
+        std::move(callback),
+        nullptr,
+        options);
 }
 
 bool ESPFetch::get(const String &url, FetchCallback callback, const FetchRequestOptions &options) {
@@ -238,7 +311,12 @@ JsonDocument ESPFetch::get(const char *url, TickType_t waitTicks, const FetchReq
         return doc;
     }
 
-    if (!enqueueRequest(url, HTTP_METHOD_GET, std::string{}, nullptr, handle, options)) {
+    if (!enqueueRequest(url,
+                        HTTP_METHOD_GET,
+                        FetchString{FetchAllocator<char>(_config.usePSRAMBuffers)},
+                        nullptr,
+                        handle,
+                        options)) {
         JsonDocument doc;
         doc["ok"] = false;
         doc["error"]["message"] = "failed to start http get";
@@ -259,8 +337,9 @@ bool ESPFetch::post(const char *url,
     if (!url) {
         return false;
     }
-    std::string body;
-    serializeJson(payload, body);
+    FetchString body{FetchAllocator<char>(_config.usePSRAMBuffers)};
+    FetchStringWriter writer(body);
+    serializeJson(payload, writer);
     return enqueueRequest(url, HTTP_METHOD_POST, std::move(body), std::move(callback), nullptr, options);
 }
 
@@ -281,8 +360,9 @@ JsonDocument ESPFetch::post(const char *url,
         doc["error"]["message"] = "url is null";
         return doc;
     }
-    std::string body;
-    serializeJson(payload, body);
+    FetchString body{FetchAllocator<char>(_config.usePSRAMBuffers)};
+    FetchStringWriter writer(body);
+    serializeJson(payload, writer);
 
     auto handle = std::make_shared<SyncHandle>();
     handle->done = xSemaphoreCreateBinary();
@@ -332,7 +412,7 @@ bool ESPFetch::getStream(const String &url,
 
 bool ESPFetch::enqueueRequest(const std::string &url,
                               esp_http_client_method_t method,
-                              std::string &&body,
+                              FetchString &&body,
                               FetchCallback callback,
                               std::shared_ptr<SyncHandle> syncHandle,
                               const FetchRequestOptions &options) {
@@ -346,17 +426,29 @@ bool ESPFetch::enqueueRequest(const std::string &url,
         return false;
     }
 
-    auto job = std::make_unique<FetchJob>();
+    auto job = std::make_unique<FetchJob>(_config.usePSRAMBuffers);
     job->owner = this;
-    job->url = normalizeUrl(url);
+    const std::string normalizedUrl = normalizeUrl(url);
+    job->url.assign(normalizedUrl.c_str(), normalizedUrl.size());
     job->method = method;
     job->body = std::move(body);
-    job->options = options;
+    job->requestOptions.timeoutMs = options.timeoutMs;
+    job->requestOptions.maxBodyBytes = options.maxBodyBytes;
+    job->requestOptions.maxHeaderBytes = options.maxHeaderBytes;
+    job->requestOptions.skipTlsCommonNameCheck = options.skipTlsCommonNameCheck;
+    job->requestOptions.allowRedirects = options.allowRedirects;
+    job->requestOptions.contentType = options.contentType;
+    job->requestOptions.headers.clear();
+    job->requestOptions.headers.reserve(options.headers.size());
+    for (const auto &header : options.headers) {
+        job->requestOptions.headers.emplace_back(header.name.c_str(), header.value.c_str(), job->stringAllocator);
+    }
     job->callback = std::move(callback);
     job->syncHandle = std::move(syncHandle);
 
-    job->bodyLimit = options.maxBodyBytes ? options.maxBodyBytes : _config.maxBodyBytes;
-    job->headerLimit = options.maxHeaderBytes ? options.maxHeaderBytes : _config.maxHeaderBytes;
+    job->bodyLimit = job->requestOptions.maxBodyBytes ? job->requestOptions.maxBodyBytes : _config.maxBodyBytes;
+    job->headerLimit =
+        job->requestOptions.maxHeaderBytes ? job->requestOptions.maxHeaderBytes : _config.maxHeaderBytes;
     if (job->bodyLimit == 0) {
         job->bodyLimit = std::numeric_limits<size_t>::max();
     }
@@ -418,11 +510,22 @@ bool ESPFetch::enqueueStreamRequest(const std::string &url,
         return false;
     }
 
-    auto job = std::make_unique<FetchJob>();
+    auto job = std::make_unique<FetchJob>(_config.usePSRAMBuffers);
     job->owner = this;
-    job->url = normalizeUrl(url);
+    const std::string normalizedUrl = normalizeUrl(url);
+    job->url.assign(normalizedUrl.c_str(), normalizedUrl.size());
     job->method = HTTP_METHOD_GET;
-    job->options = options;
+    job->requestOptions.timeoutMs = options.timeoutMs;
+    job->requestOptions.maxBodyBytes = options.maxBodyBytes;
+    job->requestOptions.maxHeaderBytes = options.maxHeaderBytes;
+    job->requestOptions.skipTlsCommonNameCheck = options.skipTlsCommonNameCheck;
+    job->requestOptions.allowRedirects = options.allowRedirects;
+    job->requestOptions.contentType = options.contentType;
+    job->requestOptions.headers.clear();
+    job->requestOptions.headers.reserve(options.headers.size());
+    for (const auto &header : options.headers) {
+        job->requestOptions.headers.emplace_back(header.name.c_str(), header.value.c_str(), job->stringAllocator);
+    }
 
     job->isStream = true;
     job->onChunk = std::move(onChunk);
@@ -431,8 +534,9 @@ bool ESPFetch::enqueueStreamRequest(const std::string &url,
     job->streamAbortError = ESP_OK;
 
     // For streaming, default to "unlimited" unless the caller explicitly sets maxBodyBytes.
-    job->bodyLimit = options.maxBodyBytes ? options.maxBodyBytes : std::numeric_limits<size_t>::max();
-    job->headerLimit = options.maxHeaderBytes ? options.maxHeaderBytes : _config.maxHeaderBytes;
+    job->bodyLimit = job->requestOptions.maxBodyBytes ? job->requestOptions.maxBodyBytes : std::numeric_limits<size_t>::max();
+    job->headerLimit =
+        job->requestOptions.maxHeaderBytes ? job->requestOptions.maxHeaderBytes : _config.maxHeaderBytes;
     if (job->headerLimit == 0) {
         job->headerLimit = std::numeric_limits<size_t>::max();
     }
@@ -560,7 +664,8 @@ esp_err_t ESPFetch::handleHttpEvent(esp_http_client_event_t *event) {
                 }
                 projected += strlen(event->header_key) + strlen(event->header_value);
                 if (projected <= job->headerLimit) {
-                    job->response.headers.push_back({event->header_key, event->header_value});
+                    job->response.headers.emplace_back(
+                        event->header_key, event->header_value, job->response.charAllocator);
                 } else {
                     job->response.headersTruncated = true;
                 }
@@ -583,11 +688,11 @@ void ESPFetch::runJob(std::unique_ptr<FetchJob> job) {
     esp_http_client_config_t config = {};
     config.url = job->url.c_str();
     config.method = job->method;
-    config.timeout_ms = job->options.timeoutMs ? job->options.timeoutMs : _config.defaultTimeoutMs;
+    config.timeout_ms = job->requestOptions.timeoutMs ? job->requestOptions.timeoutMs : _config.defaultTimeoutMs;
     config.event_handler = &ESPFetch::handleHttpEvent;
     config.user_data = job.get();
-    config.disable_auto_redirect = !(job->options.allowRedirects && _config.followRedirects);
-    config.skip_cert_common_name_check = job->options.skipTlsCommonNameCheck || _config.skipTlsCommonNameCheck;
+    config.disable_auto_redirect = !(job->requestOptions.allowRedirects && _config.followRedirects);
+    config.skip_cert_common_name_check = job->requestOptions.skipTlsCommonNameCheck || _config.skipTlsCommonNameCheck;
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (!client) {
@@ -595,7 +700,7 @@ void ESPFetch::runJob(std::unique_ptr<FetchJob> job) {
         job->response.error = ESP_ERR_NO_MEM;
     } else {
         auto hasHeader = [&](const char *key) {
-            for (const auto &header : job->options.headers) {
+            for (const auto &header : job->requestOptions.headers) {
                 if (equalsIgnoreCase(header.name, key)) {
                     return true;
                 }
@@ -607,12 +712,13 @@ void ESPFetch::runJob(std::unique_ptr<FetchJob> job) {
             esp_http_client_set_header(client, "User-Agent", _config.userAgent);
         }
 
-        const char *contentType = job->options.contentType ? job->options.contentType : _config.defaultContentType;
+        const char *contentType =
+            job->requestOptions.contentType ? job->requestOptions.contentType : _config.defaultContentType;
         if (!job->isStream && job->method == HTTP_METHOD_POST && contentType && !hasHeader("Content-Type")) {
             esp_http_client_set_header(client, "Content-Type", contentType);
         }
 
-        for (const auto &header : job->options.headers) {
+        for (const auto &header : job->requestOptions.headers) {
             esp_http_client_set_header(client, header.name.c_str(), header.value.c_str());
         }
 
@@ -669,7 +775,7 @@ JsonDocument ESPFetch::buildResult(const FetchJob &job, const FetchResponse &res
 
     auto headersObj = root["headers"].to<JsonObject>();
     for (const auto &header : response.headers) {
-        headersObj[header.name] = header.value;
+        headersObj[header.name.c_str()] = header.value.c_str();
     }
 
     if (response.error == ESP_OK) {

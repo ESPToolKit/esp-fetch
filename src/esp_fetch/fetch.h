@@ -10,6 +10,8 @@
 #include <utility>
 #include <atomic>
 
+#include "fetch_allocator.h"
+
 extern "C" {
 #include "esp_http_client.h"
 #include "freertos/FreeRTOS.h"
@@ -44,6 +46,7 @@ struct FetchConfig {
     TickType_t slotAcquireTicks = pdMS_TO_TICKS(0);
     bool skipTlsCommonNameCheck = false;
     bool followRedirects = true;
+    bool usePSRAMBuffers = false;
     const char *userAgent = "ESPFetch/1.0";
     const char *defaultContentType = "application/json";
 };
@@ -110,7 +113,7 @@ class ESPFetch {
 
     bool enqueueRequest(const std::string &url,
                         esp_http_client_method_t method,
-                        std::string &&body,
+                        FetchString &&body,
                         FetchCallback callback,
                         std::shared_ptr<SyncHandle> syncHandle,
                         const FetchRequestOptions &options);
