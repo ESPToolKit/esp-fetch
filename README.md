@@ -2,7 +2,7 @@
 
 ESPFetch is a lightweight HTTP helper that keeps ESP32 firmware **asynchronous-first**.
 
-Each request runs in its own FreeRTOS task and can operate in one of two modes:
+Each request runs in its own worker task (via `ESPWorker`) and can operate in one of two modes:
 
 - **JSON mode** – captures headers and body into a heap-backed `JsonDocument` (ArduinoJson v7)
 - **Stream mode** – delivers raw response data incrementally via callbacks (no buffering, no JSON)
@@ -22,7 +22,7 @@ This design allows ESPFetch to handle both typical REST APIs and large binary do
 
 ## Features
 
-- Async-first HTTP API built on FreeRTOS tasks
+- Async-first HTTP API built on `ESPWorker`
 - JSON-based GET / POST helpers returning `JsonDocument`
 - Optional synchronous wrappers that block the caller
 - **Binary / streaming downloads** via chunk callbacks

@@ -11,6 +11,7 @@ All notable changes to this project will be documented in this file.
 - Per-request streaming size limits via `FetchRequestOptions::maxBodyBytes` (default: unlimited for streams).
 - Hooks for retries/backoff strategies on top of the existing async API.
 - Added `FetchConfig::usePSRAMBuffers` and routed JSON-mode response body/header storage plus request-body/copied-request-header storage through `ESPBufferManager` with automatic fallback to normal heap paths.
+- Added `ESPWorker` runtime integration for request task creation/lifecycle.
 
 ### Fixed
 - Normalize malformed `http:/` or `https:/` URLs to `http://`/`https://` to avoid DNS failures with parsed hosts like `:example.com`.

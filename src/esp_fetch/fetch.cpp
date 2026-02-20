@@ -249,6 +249,13 @@ bool ESPFetch::init(const FetchConfig &config) {
     }
 
     _config = config;
+    ESPWorker::Config workerConfig{};
+    workerConfig.maxWorkers = _config.maxConcurrentRequests;
+    workerConfig.stackSizeBytes = _config.stackSize;
+    workerConfig.priority = _config.priority;
+    workerConfig.coreId = _config.coreId;
+    workerConfig.enableExternalStacks = true;
+    _worker.init(workerConfig);
     _slotSemaphore = xSemaphoreCreateCounting(_config.maxConcurrentRequests, _config.maxConcurrentRequests);
     if (!_slotSemaphore) {
         ESP_LOGE(TAG, "Failed to create fetch semaphore");
@@ -276,6 +283,8 @@ void ESPFetch::deinit() {
         vSemaphoreDelete(_slotSemaphore);
         _slotSemaphore = nullptr;
     }
+
+    _worker.deinit();
 }
 
 bool ESPFetch::get(const char *url, FetchCallback callback, const FetchRequestOptions &options) {
@@ -471,17 +480,15 @@ bool ESPFetch::enqueueRequest(const std::string &url,
 
     _activeTasks.fetch_add(1, std::memory_order_acq_rel);
 
-    TaskHandle_t handle = nullptr;
     FetchJob *jobPtr = job.release();
-    BaseType_t res =
-        xTaskCreatePinnedToCore(&ESPFetch::requestTask,
-                                "esp-fetch",
-                                stackSize,
-                                jobPtr,
-                                _config.priority,
-                                &handle,
-                                _config.coreId);
-    if (res != pdPASS) {
+    WorkerConfig taskConfig{};
+    taskConfig.name = "esp-fetch";
+    taskConfig.stackSizeBytes = stackSize;
+    taskConfig.priority = _config.priority;
+    taskConfig.coreId = _config.coreId;
+    WorkerResult res = _config.usePSRAMBuffers ? _worker.spawnExt([jobPtr]() { ESPFetch::requestTask(jobPtr); }, taskConfig)
+                                               : _worker.spawn([jobPtr]() { ESPFetch::requestTask(jobPtr); }, taskConfig);
+    if (!res) {
         ESP_LOGE(TAG, "Failed to spawn fetch task");
         _activeTasks.fetch_sub(1, std::memory_order_acq_rel);
         delete jobPtr;
@@ -550,17 +557,15 @@ bool ESPFetch::enqueueStreamRequest(const std::string &url,
 
     _activeTasks.fetch_add(1, std::memory_order_acq_rel);
 
-    TaskHandle_t handle = nullptr;
     FetchJob *jobPtr = job.release();
-    BaseType_t res =
-        xTaskCreatePinnedToCore(&ESPFetch::requestTask,
-                                "esp-fetch",
-                                stackSize,
-                                jobPtr,
-                                _config.priority,
-                                &handle,
-                                _config.coreId);
-    if (res != pdPASS) {
+    WorkerConfig taskConfig{};
+    taskConfig.name = "esp-fetch";
+    taskConfig.stackSizeBytes = stackSize;
+    taskConfig.priority = _config.priority;
+    taskConfig.coreId = _config.coreId;
+    WorkerResult res = _config.usePSRAMBuffers ? _worker.spawnExt([jobPtr]() { ESPFetch::requestTask(jobPtr); }, taskConfig)
+                                               : _worker.spawn([jobPtr]() { ESPFetch::requestTask(jobPtr); }, taskConfig);
+    if (!res) {
         ESP_LOGE(TAG, "Failed to spawn fetch task");
         _activeTasks.fetch_sub(1, std::memory_order_acq_rel);
         delete jobPtr;
@@ -595,11 +600,9 @@ void ESPFetch::requestTask(void *arg) {
         if (job && job->owner) {
             job->owner->_activeTasks.fetch_sub(1, std::memory_order_acq_rel);
         }
-        vTaskDelete(nullptr);
         return;
     }
     job->owner->runJob(std::move(job));
-    vTaskDelete(nullptr);
 }
 
 esp_err_t ESPFetch::handleHttpEvent(esp_http_client_event_t *event) {
