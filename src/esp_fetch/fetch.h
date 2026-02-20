@@ -10,7 +10,6 @@
 #include <utility>
 #include <atomic>
 
-#include <ESPWorker.h>
 #include "fetch_allocator.h"
 
 extern "C" {
@@ -134,7 +133,6 @@ class ESPFetch {
     static void deliverResult(const std::unique_ptr<FetchJob> &job, const JsonDocument &result);
 
     FetchConfig _config{};
-    ESPWorker _worker{};
     bool _initialized = false;
     std::atomic<size_t> _activeTasks{0};
     SemaphoreHandle_t _slotSemaphore = nullptr;
