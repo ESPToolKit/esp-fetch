@@ -2,6 +2,7 @@
 #include <ESPFetch.h>
 
 ESPFetch fetch;
+bool deinitialized = false;
 
 const char *POST_URL = "https://httpbin.org/post";
 const char *GET_URL = "https://httpbin.org/get";
@@ -62,5 +63,10 @@ void setup() {
 }
 
 void loop() {
+    if (!deinitialized && fetch.isInitialized() && millis() > 15000UL) {
+        fetch.deinit();
+        deinitialized = true;
+        ESP_LOGI("FETCH_DEMO", "ESPFetch deinitialized");
+    }
     vTaskDelay(pdMS_TO_TICKS(1000));
 }

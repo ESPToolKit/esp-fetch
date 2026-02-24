@@ -239,7 +239,7 @@ ESPFetch::~ESPFetch() {
 }
 
 bool ESPFetch::init(const FetchConfig &config) {
-    if (_initialized) {
+    if (isInitialized()) {
         deinit();
     }
 
@@ -255,12 +255,18 @@ bool ESPFetch::init(const FetchConfig &config) {
         return false;
     }
 
-    _initialized = true;
+    _teardownRequested.store(false, std::memory_order_release);
+    _initialized.store(true, std::memory_order_release);
     return true;
 }
 
 void ESPFetch::deinit() {
-    _initialized = false;
+    if (!isInitialized() && _activeTasks.load(std::memory_order_acquire) == 0 && _slotSemaphore == nullptr) {
+        return;
+    }
+
+    _teardownRequested.store(true, std::memory_order_release);
+    _initialized.store(false, std::memory_order_release);
 
     while (_activeTasks.load(std::memory_order_acquire) > 0) {
 #if defined(INCLUDE_xTaskGetSchedulerState) && (INCLUDE_xTaskGetSchedulerState == 1)
@@ -270,13 +276,17 @@ void ESPFetch::deinit() {
 #endif
         vTaskDelay(pdMS_TO_TICKS(1));
     }
-    _activeTasks.store(0, std::memory_order_release);
 
     if (_slotSemaphore) {
         vSemaphoreDelete(_slotSemaphore);
         _slotSemaphore = nullptr;
     }
 
+    _teardownRequested.store(false, std::memory_order_release);
+}
+
+bool ESPFetch::isInitialized() const {
+    return _initialized.load(std::memory_order_acquire);
 }
 
 bool ESPFetch::get(const char *url, FetchCallback callback, const FetchRequestOptions &options) {
@@ -417,7 +427,7 @@ bool ESPFetch::enqueueRequest(const std::string &url,
                               FetchCallback callback,
                               std::shared_ptr<SyncHandle> syncHandle,
                               const FetchRequestOptions &options) {
-    if (!_initialized) {
+    if (!isInitialized()) {
         ESP_LOGE(TAG, "ESPFetch not initialized");
         return false;
     }
@@ -490,7 +500,7 @@ bool ESPFetch::enqueueStreamRequest(const std::string &url,
                                     FetchChunkCallback onChunk,
                                     FetchStreamCallback onDone,
                                     const FetchRequestOptions &options) {
-    if (!_initialized) {
+    if (!isInitialized()) {
         ESP_LOGE(TAG, "ESPFetch not initialized");
         return false;
     }
@@ -596,6 +606,12 @@ esp_err_t ESPFetch::handleHttpEvent(esp_http_client_event_t *event) {
         return ESP_OK;
     }
     auto *job = static_cast<FetchJob *>(event->user_data);
+    if (job->owner && job->owner->_teardownRequested.load(std::memory_order_acquire)) {
+        if (job->isStream && job->streamAbortError == ESP_OK) {
+            job->streamAbortError = ESP_ERR_INVALID_STATE;
+        }
+        return ESP_FAIL;
+    }
 
     switch (event->event_id) {
         case HTTP_EVENT_ON_DATA:
@@ -674,57 +690,65 @@ void ESPFetch::runJob(std::unique_ptr<FetchJob> job) {
 
     const int64_t start = esp_timer_get_time();
 
-    esp_http_client_config_t config = {};
-    config.url = job->url.c_str();
-    config.method = job->method;
-    config.timeout_ms = job->requestOptions.timeoutMs ? job->requestOptions.timeoutMs : _config.defaultTimeoutMs;
-    config.event_handler = &ESPFetch::handleHttpEvent;
-    config.user_data = job.get();
-    config.disable_auto_redirect = !(job->requestOptions.allowRedirects && _config.followRedirects);
-    config.skip_cert_common_name_check = job->requestOptions.skipTlsCommonNameCheck || _config.skipTlsCommonNameCheck;
-
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (!client) {
-        ESP_LOGE(TAG, "esp_http_client_init failed");
-        job->response.error = ESP_ERR_NO_MEM;
+    if (_teardownRequested.load(std::memory_order_acquire)) {
+        job->response.error = ESP_ERR_INVALID_STATE;
     } else {
-        auto hasHeader = [&](const char *key) {
-            for (const auto &header : job->requestOptions.headers) {
-                if (equalsIgnoreCase(header.name, key)) {
-                    return true;
+        esp_http_client_config_t config = {};
+        config.url = job->url.c_str();
+        config.method = job->method;
+        config.timeout_ms = job->requestOptions.timeoutMs ? job->requestOptions.timeoutMs : _config.defaultTimeoutMs;
+        config.event_handler = &ESPFetch::handleHttpEvent;
+        config.user_data = job.get();
+        config.disable_auto_redirect = !(job->requestOptions.allowRedirects && _config.followRedirects);
+        config.skip_cert_common_name_check =
+            job->requestOptions.skipTlsCommonNameCheck || _config.skipTlsCommonNameCheck;
+
+        esp_http_client_handle_t client = esp_http_client_init(&config);
+        if (!client) {
+            ESP_LOGE(TAG, "esp_http_client_init failed");
+            job->response.error = ESP_ERR_NO_MEM;
+        } else if (_teardownRequested.load(std::memory_order_acquire)) {
+            job->response.error = ESP_ERR_INVALID_STATE;
+            esp_http_client_cleanup(client);
+        } else {
+            auto hasHeader = [&](const char *key) {
+                for (const auto &header : job->requestOptions.headers) {
+                    if (equalsIgnoreCase(header.name, key)) {
+                        return true;
+                    }
                 }
+                return false;
+            };
+
+            if (_config.userAgent && !hasHeader("User-Agent")) {
+                esp_http_client_set_header(client, "User-Agent", _config.userAgent);
             }
-            return false;
-        };
 
-        if (_config.userAgent && !hasHeader("User-Agent")) {
-            esp_http_client_set_header(client, "User-Agent", _config.userAgent);
-        }
+            const char *contentType =
+                job->requestOptions.contentType ? job->requestOptions.contentType : _config.defaultContentType;
+            if (!job->isStream && job->method == HTTP_METHOD_POST && contentType && !hasHeader("Content-Type")) {
+                esp_http_client_set_header(client, "Content-Type", contentType);
+            }
 
-        const char *contentType =
-            job->requestOptions.contentType ? job->requestOptions.contentType : _config.defaultContentType;
-        if (!job->isStream && job->method == HTTP_METHOD_POST && contentType && !hasHeader("Content-Type")) {
-            esp_http_client_set_header(client, "Content-Type", contentType);
-        }
+            for (const auto &header : job->requestOptions.headers) {
+                esp_http_client_set_header(client, header.name.c_str(), header.value.c_str());
+            }
 
-        for (const auto &header : job->requestOptions.headers) {
-            esp_http_client_set_header(client, header.name.c_str(), header.value.c_str());
-        }
+            if (!job->body.empty()) {
+                esp_http_client_set_post_field(client, job->body.c_str(), job->body.length());
+            }
 
-        if (!job->body.empty()) {
-            esp_http_client_set_post_field(client, job->body.c_str(), job->body.length());
+            job->response.error = esp_http_client_perform(client);
+            if (job->response.error == ESP_OK) {
+                job->response.statusCode = esp_http_client_get_status_code(client);
+            }
+            // Preserve intentional stream abort reason (onChunk returned false or maxBodyBytes clipping),
+            // instead of losing it to generic ESP_FAIL from esp_http_client_perform().
+            if (job->isStream && job->response.error != ESP_OK && job->streamAbortError != ESP_OK) {
+                job->response.error = job->streamAbortError;
+            }
+            esp_http_client_cleanup(client);
         }
-
-        job->response.error = esp_http_client_perform(client);
-        if (job->response.error == ESP_OK) {
-            job->response.statusCode = esp_http_client_get_status_code(client);
-        }
-        // Preserve intentional stream abort reason (onChunk returned false or maxBodyBytes clipping),
-        // instead of losing it to generic ESP_FAIL from esp_http_client_perform().
-        if (job->isStream && job->response.error != ESP_OK && job->streamAbortError != ESP_OK) {
-            job->response.error = job->streamAbortError;
-        }
-        esp_http_client_cleanup(client);
     }
 
     job->response.durationUs = esp_timer_get_time() - start;

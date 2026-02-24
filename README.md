@@ -58,7 +58,23 @@ void setup() {
 }
 
 void loop() {}
-````
+```
+
+---
+
+## Teardown Contract
+
+`ESPFetch` supports explicit teardown and re-init:
+
+- `deinit()` is safe before `init()`
+- `deinit()` is idempotent
+- Active requests are asked to abort during teardown and teardown waits for worker tasks to finish
+
+```cpp
+if (fetch.isInitialized()) {
+    fetch.deinit();
+}
+```
 
 ---
 
@@ -195,6 +211,7 @@ If the limit is exceeded:
 ```cpp
 bool init(const FetchConfig& cfg = {});
 void deinit();
+bool isInitialized() const;
 ```
 
 ---
