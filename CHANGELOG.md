@@ -12,10 +12,13 @@ All notable changes to this project will be documented in this file.
 - Hooks for retries/backoff strategies on top of the existing async API.
 - Added `FetchConfig::usePSRAMBuffers` and routed JSON-mode response body/header storage plus request-body/copied-request-header storage through `ESPBufferManager` with automatic fallback to normal heap paths.
 - Switched request task creation/lifecycle to native FreeRTOS `xTaskCreatePinnedToCore(...)` handling.
+- Added explicit teardown-contract lifecycle coverage (`deinit()` pre-init, repeated `deinit()`, and `init -> deinit -> init`).
+- Added `isInitialized()` as the public runtime-state contract accessor.
 
 ### Fixed
 - Normalize malformed `http:/` or `https:/` URLs to `http://`/`https://` to avoid DNS failures with parsed hosts like `:example.com`.
 - Collapse extra slashes (`https:///`) and strip a leading `://:` host typo before handing URLs to esp_http_client.
+- Teardown now requests active workers to abort in-flight operations and waits for worker completion before releasing shared runtime resources.
 
 ### Notes
 - Streaming requests bypass all body buffering and ArduinoJson processing.

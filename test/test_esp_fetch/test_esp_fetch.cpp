@@ -7,15 +7,15 @@ static void test_init_rejects_zero_concurrency() {
     FetchConfig cfg{};
     cfg.maxConcurrentRequests = 0;
     TEST_ASSERT_FALSE(fetch.init(cfg));
-    TEST_ASSERT_FALSE(fetch.initialized());
+    TEST_ASSERT_FALSE(fetch.isInitialized());
 }
 
 static void test_init_and_deinit_cycle_updates_initialized_flag() {
     ESPFetch fetch;
     TEST_ASSERT_TRUE(fetch.init());
-    TEST_ASSERT_TRUE(fetch.initialized());
+    TEST_ASSERT_TRUE(fetch.isInitialized());
     fetch.deinit();
-    TEST_ASSERT_FALSE(fetch.initialized());
+    TEST_ASSERT_FALSE(fetch.isInitialized());
 }
 
 static void test_init_accepts_psram_buffer_toggle() {
@@ -23,8 +23,33 @@ static void test_init_accepts_psram_buffer_toggle() {
     FetchConfig cfg{};
     cfg.usePSRAMBuffers = true;
     TEST_ASSERT_TRUE(fetch.init(cfg));
-    TEST_ASSERT_TRUE(fetch.initialized());
+    TEST_ASSERT_TRUE(fetch.isInitialized());
     fetch.deinit();
+}
+
+static void test_deinit_is_safe_before_init() {
+    ESPFetch fetch;
+    fetch.deinit();
+    TEST_ASSERT_FALSE(fetch.isInitialized());
+}
+
+static void test_deinit_is_idempotent() {
+    ESPFetch fetch;
+    TEST_ASSERT_TRUE(fetch.init());
+    TEST_ASSERT_TRUE(fetch.isInitialized());
+    fetch.deinit();
+    fetch.deinit();
+    TEST_ASSERT_FALSE(fetch.isInitialized());
+}
+
+static void test_reinit_after_deinit_is_supported() {
+    ESPFetch fetch;
+    TEST_ASSERT_TRUE(fetch.init());
+    fetch.deinit();
+    TEST_ASSERT_TRUE(fetch.init());
+    TEST_ASSERT_TRUE(fetch.isInitialized());
+    fetch.deinit();
+    TEST_ASSERT_FALSE(fetch.isInitialized());
 }
 
 static void test_async_get_requires_initialization() {
@@ -84,6 +109,9 @@ void setup() {
     RUN_TEST(test_init_rejects_zero_concurrency);
     RUN_TEST(test_init_and_deinit_cycle_updates_initialized_flag);
     RUN_TEST(test_init_accepts_psram_buffer_toggle);
+    RUN_TEST(test_deinit_is_safe_before_init);
+    RUN_TEST(test_deinit_is_idempotent);
+    RUN_TEST(test_reinit_after_deinit_is_supported);
     RUN_TEST(test_async_get_requires_initialization);
     RUN_TEST(test_sync_get_reports_error_when_not_initialized);
     RUN_TEST(test_sync_get_requires_url);

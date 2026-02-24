@@ -72,7 +72,7 @@ class ESPFetch {
 
     bool init(const FetchConfig &config = FetchConfig{});
     void deinit();
-    bool initialized() const { return _initialized; }
+    bool isInitialized() const;
 
     bool get(const char *url, FetchCallback callback, const FetchRequestOptions &options = FetchRequestOptions{});
     bool get(const String &url, FetchCallback callback, const FetchRequestOptions &options = FetchRequestOptions{});
@@ -133,7 +133,8 @@ class ESPFetch {
     static void deliverResult(const std::unique_ptr<FetchJob> &job, const JsonDocument &result);
 
     FetchConfig _config{};
-    bool _initialized = false;
+    std::atomic<bool> _initialized{false};
+    std::atomic<bool> _teardownRequested{false};
     std::atomic<size_t> _activeTasks{0};
     SemaphoreHandle_t _slotSemaphore = nullptr;
 };
