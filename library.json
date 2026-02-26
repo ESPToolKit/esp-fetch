@@ -1,6 +1,6 @@
 {
   "name": "ESPFetch",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Async HTTP helper for ESP32 firmware with JsonDocument results",
   "keywords": [
     "esp32",
