@@ -83,26 +83,29 @@ if (fetch.isInitialized()) {
 ### Async POST
 
 ```cpp
+
+const char* exampleURL = "https://httpbin.org/post";
+
 JsonDocument payload;
 payload["hello"] = "world";
 
-bool started = fetch.post(
-    "https://httpbin.org/post",
-    payload,
-    [](JsonDocument result) {
-        if (!result["error"].isNull()) {
-            ESP_LOGE("FETCH",
-                     "POST failed: %s",
-                     result["error"]["message"].as<const char*>());
-            return;
-        }
-
-        ESP_LOGI("FETCH",
-                 "POST %d in %d ms",
-                 result["status"].as<int>(),
-                 result["duration_ms"].as<int>());
+void resultCallback(JsonDocument result){
+    if (!result["error"].isNull()) {
+        ESP_LOGE("FETCH",
+            "POST failed: %s",
+            result["error"]["message"].as<const char*>()
+        );
+        return;
     }
-);
+
+    ESP_LOGI("FETCH",
+        "POST %d in %d ms",
+        result["status"].as<int>(),
+        result["duration_ms"].as<int>()
+    );
+}
+
+bool started = fetch.post(exampleURL, payload, resultCallback);
 
 if (!started) {
     ESP_LOGE("FETCH", "Failed to start POST request");
@@ -114,13 +117,13 @@ if (!started) {
 ### Sync GET
 
 ```cpp
-JsonDocument result =
-    fetch.get("https://httpbin.org/get", portMAX_DELAY);
+JsonDocument result = fetch.get("https://httpbin.org/get", portMAX_DELAY);
 
 if (!result["error"].isNull()) {
     ESP_LOGW("FETCH",
-             "GET failed: %s",
-             result["error"]["message"].as<const char*>());
+        "GET failed: %s",
+        result["error"]["message"].as<const char*>()
+    );
 } else {
     Serial.printf("Status: %d\n", result["status"].as<int>());
 }
@@ -150,30 +153,35 @@ Ideal for:
 ### Async Streaming Example
 
 ```cpp
-bool started = fetch.getStream(
-    "https://example.com/firmware.bin",
 
-    // Called for every received chunk
-    [](const void* data, size_t size) -> bool {
-        // Write directly to flash, file, or buffer
-        // file.write((const uint8_t*)data, size);
-        return true; // return false to abort the transfer
-    },
+const char* exampleURL = "https://example.com/firmware.bin";
 
-    // Called once when the transfer finishes
-    [](StreamResult result) {
-        if (result.error != ESP_OK) {
-            ESP_LOGE("FETCH",
-                     "Stream failed: %s",
-                     esp_err_to_name(result.error));
-            return;
-        }
+bool streamCallback(const void* data, size_t size){
+    // Write directly to flash, file, or buffer
+    // file.write((const uint8_t*)data, size);
+    return true; // return false to abort the transfer
+}
 
-        ESP_LOGI("FETCH",
-                 "Download complete: HTTP %d, %u bytes",
-                 result.statusCode,
-                 result.receivedBytes);
+void resultCallback(StreamResult result){
+    if (result.error != ESP_OK) {
+        ESP_LOGE("FETCH",
+            "Stream failed: %s",
+            esp_err_to_name(result.error)
+        );
+        return;
     }
+
+    ESP_LOGI("FETCH",
+        "Download complete: HTTP %d, %u bytes",
+        result.statusCode,
+        result.receivedBytes
+    );
+}
+
+bool started = fetch.getStream(
+    exampleURL,
+    streamCallback,
+    resultCallback
 );
 
 if (!started) {
@@ -220,22 +228,26 @@ bool isInitialized() const;
 
 ```cpp
 bool get(const char* url,
-         FetchCallback cb,
-         const FetchRequestOptions& opts = {});
+    FetchCallback cb,
+    const FetchRequestOptions& opts = {}
+);
 
 bool post(const char* url,
-          const JsonDocument& payload,
-          FetchCallback cb,
-          const FetchRequestOptions& opts = {});
+    const JsonDocument& payload,
+    FetchCallback cb,
+    const FetchRequestOptions& opts = {}
+);
 
 JsonDocument get(const char* url,
-                 TickType_t waitTicks,
-                 const FetchRequestOptions& opts = {});
+    TickType_t waitTicks,
+    const FetchRequestOptions& opts = {}
+);
 
 JsonDocument post(const char* url,
-                  const JsonDocument& payload,
-                  TickType_t waitTicks,
-                  const FetchRequestOptions& opts = {});
+    const JsonDocument& payload,
+    TickType_t waitTicks,
+    const FetchRequestOptions& opts = {}
+);
 ```
 
 ---
@@ -244,24 +256,24 @@ JsonDocument post(const char* url,
 
 ```cpp
 bool getStream(const char* url,
-               FetchChunkCallback onChunk,
-               FetchStreamCallback onDone = nullptr,
-               const FetchRequestOptions& opts = {});
+    FetchChunkCallback onChunk,
+    FetchStreamCallback onDone = nullptr,
+    const FetchRequestOptions& opts = {}
+);
 
 bool getStream(const String& url,
-               FetchChunkCallback onChunk,
-               FetchStreamCallback onDone = nullptr,
-               const FetchRequestOptions& opts = {});
+    FetchChunkCallback onChunk,
+    FetchStreamCallback onDone = nullptr,
+    const FetchRequestOptions& opts = {}
+);
 ```
 
 #### Callbacks
 
 ```cpp
-using FetchChunkCallback =
-    std::function<bool(const void* data, size_t size)>;
+using FetchChunkCallback = std::function<bool(const void* data, size_t size)>;
 
-using FetchStreamCallback =
-    std::function<void(StreamResult result)>;
+using FetchStreamCallback = std::function<void(StreamResult result)>;
 
 struct StreamResult {
     esp_err_t error;
