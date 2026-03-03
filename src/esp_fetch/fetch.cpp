@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <climits>
 #include <cstring>
 #include <limits>
 
@@ -55,6 +56,8 @@ struct InternalFetchRequestOptions {
     uint32_t timeoutMs = 0;
     size_t maxBodyBytes = 0;
     size_t maxHeaderBytes = 0;
+    size_t rxBufferSize = 0;
+    size_t txBufferSize = 0;
     bool skipTlsCommonNameCheck = false;
     bool allowRedirects = true;
     InternalFetchHeaderVector headers;
@@ -165,6 +168,18 @@ std::string normalizeUrl(const std::string &url) {
         ESP_LOGW(TAG, "Normalized URL to %s", normalized.c_str());
     }
     return normalized;
+}
+
+int resolveHttpBufferSize(const char *label, size_t requestValue, size_t configValue) {
+    const size_t selected = requestValue ? requestValue : configValue;
+    if (selected == 0) {
+        return 0;
+    }
+    if (selected > static_cast<size_t>(INT_MAX)) {
+        ESP_LOGW(TAG, "%s exceeds INT_MAX, clamping to %d bytes", label, INT_MAX);
+        return INT_MAX;
+    }
+    return static_cast<int>(selected);
 }
 }  // namespace
 
@@ -446,6 +461,8 @@ bool ESPFetch::enqueueRequest(const std::string &url,
     job->requestOptions.timeoutMs = options.timeoutMs;
     job->requestOptions.maxBodyBytes = options.maxBodyBytes;
     job->requestOptions.maxHeaderBytes = options.maxHeaderBytes;
+    job->requestOptions.rxBufferSize = options.rxBufferSize;
+    job->requestOptions.txBufferSize = options.txBufferSize;
     job->requestOptions.skipTlsCommonNameCheck = options.skipTlsCommonNameCheck;
     job->requestOptions.allowRedirects = options.allowRedirects;
     job->requestOptions.contentType = options.contentType;
@@ -523,6 +540,8 @@ bool ESPFetch::enqueueStreamRequest(const std::string &url,
     job->requestOptions.timeoutMs = options.timeoutMs;
     job->requestOptions.maxBodyBytes = options.maxBodyBytes;
     job->requestOptions.maxHeaderBytes = options.maxHeaderBytes;
+    job->requestOptions.rxBufferSize = options.rxBufferSize;
+    job->requestOptions.txBufferSize = options.txBufferSize;
     job->requestOptions.skipTlsCommonNameCheck = options.skipTlsCommonNameCheck;
     job->requestOptions.allowRedirects = options.allowRedirects;
     job->requestOptions.contentType = options.contentType;
@@ -697,6 +716,10 @@ void ESPFetch::runJob(std::unique_ptr<FetchJob> job) {
         config.url = job->url.c_str();
         config.method = job->method;
         config.timeout_ms = job->requestOptions.timeoutMs ? job->requestOptions.timeoutMs : _config.defaultTimeoutMs;
+        config.buffer_size = resolveHttpBufferSize(
+            "RX buffer size", job->requestOptions.rxBufferSize, _config.rxBufferSize);
+        config.buffer_size_tx = resolveHttpBufferSize(
+            "TX buffer size", job->requestOptions.txBufferSize, _config.txBufferSize);
         config.event_handler = &ESPFetch::handleHttpEvent;
         config.user_data = job.get();
         config.disable_auto_redirect = !(job->requestOptions.allowRedirects && _config.followRedirects);

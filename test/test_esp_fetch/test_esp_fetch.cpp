@@ -27,6 +27,31 @@ static void test_init_accepts_psram_buffer_toggle() {
     fetch.deinit();
 }
 
+static void test_buffer_size_options_default_to_idf_defaults() {
+    FetchConfig cfg{};
+    FetchRequestOptions opts{};
+
+    TEST_ASSERT_EQUAL_UINT32(0, cfg.rxBufferSize);
+    TEST_ASSERT_EQUAL_UINT32(0, cfg.txBufferSize);
+    TEST_ASSERT_EQUAL_UINT32(0, opts.rxBufferSize);
+    TEST_ASSERT_EQUAL_UINT32(0, opts.txBufferSize);
+}
+
+static void test_buffer_size_options_are_assignable() {
+    FetchConfig cfg{};
+    FetchRequestOptions opts{};
+
+    cfg.rxBufferSize = 8192;
+    cfg.txBufferSize = 2048;
+    opts.rxBufferSize = 4096;
+    opts.txBufferSize = 1024;
+
+    TEST_ASSERT_EQUAL_UINT32(8192, cfg.rxBufferSize);
+    TEST_ASSERT_EQUAL_UINT32(2048, cfg.txBufferSize);
+    TEST_ASSERT_EQUAL_UINT32(4096, opts.rxBufferSize);
+    TEST_ASSERT_EQUAL_UINT32(1024, opts.txBufferSize);
+}
+
 static void test_deinit_is_safe_before_init() {
     ESPFetch fetch;
     fetch.deinit();
@@ -109,6 +134,8 @@ void setup() {
     RUN_TEST(test_init_rejects_zero_concurrency);
     RUN_TEST(test_init_and_deinit_cycle_updates_initialized_flag);
     RUN_TEST(test_init_accepts_psram_buffer_toggle);
+    RUN_TEST(test_buffer_size_options_default_to_idf_defaults);
+    RUN_TEST(test_buffer_size_options_are_assignable);
     RUN_TEST(test_deinit_is_safe_before_init);
     RUN_TEST(test_deinit_is_idempotent);
     RUN_TEST(test_reinit_after_deinit_is_supported);

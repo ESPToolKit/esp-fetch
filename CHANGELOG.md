@@ -9,6 +9,7 @@ All notable changes to this project will be documented in this file.
 - Chunk-based delivery using `FetchChunkCallback` to process large payloads incrementally (files, firmware, blobs).
 - Completion callback with `StreamResult` containing transport error, HTTP status code, and total received byte count.
 - Per-request streaming size limits via `FetchRequestOptions::maxBodyBytes` (default: unlimited for streams).
+- Added global (`FetchConfig`) and per-request (`FetchRequestOptions`) TX/RX HTTP client buffer sizing controls.
 - Hooks for retries/backoff strategies on top of the existing async API.
 - Added `FetchConfig::usePSRAMBuffers` and routed JSON-mode response body/header storage plus request-body/copied-request-header storage through `ESPBufferManager` with automatic fallback to normal heap paths.
 - Switched request task creation/lifecycle to native FreeRTOS `xTaskCreatePinnedToCore(...)` handling.

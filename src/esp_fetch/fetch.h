@@ -29,6 +29,8 @@ struct FetchRequestOptions {
     uint32_t timeoutMs = 0;
     size_t maxBodyBytes = 0;
     size_t maxHeaderBytes = 0;
+    size_t rxBufferSize = 0;
+    size_t txBufferSize = 0;
     bool skipTlsCommonNameCheck = false;
     bool allowRedirects = true;
     std::vector<FetchHeader> headers;
@@ -43,6 +45,8 @@ struct FetchConfig {
     uint32_t defaultTimeoutMs = 15000;
     size_t maxBodyBytes = 16384;
     size_t maxHeaderBytes = 4096;
+    size_t rxBufferSize = 0;
+    size_t txBufferSize = 0;
     TickType_t slotAcquireTicks = pdMS_TO_TICKS(0);
     bool skipTlsCommonNameCheck = false;
     bool followRedirects = true;

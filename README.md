@@ -29,6 +29,7 @@ This design allows ESPFetch to handle both typical REST APIs and large binary do
 - Zero-copy streaming (no body buffering, no JSON parsing)
 - Configurable concurrency via counting semaphore
 - Per-request and global limits for body and header sizes
+- Per-request and global ESP-IDF HTTP client RX/TX buffer sizing
 - Optional `FetchConfig::usePSRAMBuffers` to prefer PSRAM-backed ESPFetch-owned buffers via `ESPBufferManager` (JSON response body/headers, request body strings, and copied request headers; safe fallback on non-PSRAM boards)
 - Built on ESP-IDF `esp_http_client` (TLS, redirects, auth, streaming)
 - Detailed result metadata (status, timing, truncation, transport errors)
@@ -52,6 +53,8 @@ void setup() {
     cfg.stackSize = 6144;
     cfg.priority = 4;
     cfg.defaultTimeoutMs = 12000;
+    cfg.rxBufferSize = 8192; // optional: esp_http_client RX buffer size (0 = IDF default)
+    cfg.txBufferSize = 2048; // optional: esp_http_client TX buffer size (0 = IDF default)
     cfg.usePSRAMBuffers = true; // optional: best-effort PSRAM for ESPFetch-owned request/response buffers
 
     fetch.init(cfg);
@@ -212,6 +215,35 @@ If the limit is exceeded:
 
 ---
 
+## HTTP Client Buffer Sizing (RX/TX)
+
+ESPFetch exposes ESP-IDF HTTP client buffer sizing for all request types, including streams.
+
+Set defaults at init time:
+
+```cpp
+FetchConfig cfg;
+cfg.rxBufferSize = 8192; // esp_http_client_config_t::buffer_size
+cfg.txBufferSize = 2048; // esp_http_client_config_t::buffer_size_tx
+fetch.init(cfg);
+```
+
+Override per request:
+
+```cpp
+FetchRequestOptions opts;
+opts.rxBufferSize = 4096;
+opts.txBufferSize = 1024;
+fetch.get("https://httpbin.org/get", resultCallback, opts);
+```
+
+Notes:
+
+* Per-request values override `FetchConfig` defaults.
+* `0` keeps ESP-IDF defaults.
+
+---
+
 ## API Reference
 
 ### Initialization
@@ -220,6 +252,14 @@ If the limit is exceeded:
 bool init(const FetchConfig& cfg = {});
 void deinit();
 bool isInitialized() const;
+```
+
+```cpp
+struct FetchConfig {
+    // ...
+    size_t rxBufferSize = 0;
+    size_t txBufferSize = 0;
+};
 ```
 
 ---
@@ -248,6 +288,14 @@ JsonDocument post(const char* url,
     TickType_t waitTicks,
     const FetchRequestOptions& opts = {}
 );
+```
+
+```cpp
+struct FetchRequestOptions {
+    // ...
+    size_t rxBufferSize = 0;
+    size_t txBufferSize = 0;
+};
 ```
 
 ---
