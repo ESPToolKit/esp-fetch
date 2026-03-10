@@ -8,65 +8,88 @@ const char *POST_URL = "https://httpbin.org/post";
 const char *GET_URL = "https://httpbin.org/get";
 
 void setup() {
-    Serial.begin(115200);
-    delay(200);
+	Serial.begin(115200);
+	delay(200);
 
-    FetchConfig cfg;
-    cfg.maxConcurrentRequests = 2;
-    cfg.stackSize = 6144;
-    cfg.priority = 4;
-    cfg.defaultTimeoutMs = 12000;
-    fetch.init(cfg);
+	FetchConfig cfg;
+	cfg.maxConcurrentRequests = 2;
+	cfg.stackSize = 6144;
+	cfg.priority = 4;
+	cfg.defaultTimeoutMs = 12000;
+	fetch.init(cfg);
 
-    JsonDocument payload;
-    payload["hello"] = "world";
+	JsonDocument payload;
+	payload["hello"] = "world";
 
-    bool posting = fetch.post(POST_URL, payload, [](JsonDocument result) {
-        if (!result["error"].isNull()) {
-            ESP_LOGE("FETCH_DEMO", "async post failed: %s", result["error"]["message"].as<const char *>());
-            return;
-        }
-        ESP_LOGI("FETCH_DEMO", "async post status %d body len %u",
-                 result["status"].as<int>(),
-                 result["body"].as<String>().length());
-    });
-    if (!posting) {
-        ESP_LOGE("FETCH_DEMO", "Failed to start http post");
-    }
+	bool posting = fetch.post(POST_URL, payload, [](JsonDocument result) {
+		if (!result["error"].isNull()) {
+			ESP_LOGE(
+			    "FETCH_DEMO",
+			    "async post failed: %s",
+			    result["error"]["message"].as<const char *>()
+			);
+			return;
+		}
+		ESP_LOGI(
+		    "FETCH_DEMO",
+		    "async post status %d body len %u",
+		    result["status"].as<int>(),
+		    result["body"].as<String>().length()
+		);
+	});
+	if (!posting) {
+		ESP_LOGE("FETCH_DEMO", "Failed to start http post");
+	}
 
-    FetchRequestOptions opts;
-    opts.headers.push_back({"Accept", "application/json"});
-    bool getting = fetch.get(GET_URL, [](JsonDocument result) {
-        if (!result["error"].isNull()) {
-            ESP_LOGE("FETCH_DEMO", "async get failed: %s", result["error"]["message"].as<const char *>());
-            return;
-        }
-        Serial.printf("Server: %s\n", result["headers"]["server"].as<const char *>());
-    }, opts);
-    if (!getting) {
-        ESP_LOGE("FETCH_DEMO", "Failed to start http get");
-    }
+	FetchRequestOptions opts;
+	opts.headers.push_back({"Accept", "application/json"});
+	bool getting = fetch.get(
+	    GET_URL,
+	    [](JsonDocument result) {
+		    if (!result["error"].isNull()) {
+			    ESP_LOGE(
+			        "FETCH_DEMO",
+			        "async get failed: %s",
+			        result["error"]["message"].as<const char *>()
+			    );
+			    return;
+		    }
+		    Serial.printf("Server: %s\n", result["headers"]["server"].as<const char *>());
+	    },
+	    opts
+	);
+	if (!getting) {
+		ESP_LOGE("FETCH_DEMO", "Failed to start http get");
+	}
 
-    JsonDocument postResult = fetch.post(POST_URL, payload, portMAX_DELAY);
-    if (!postResult["error"].isNull()) {
-        ESP_LOGW("FETCH_DEMO", "sync post failed: %s", postResult["error"]["message"].as<const char *>());
-    } else {
-        Serial.printf("Sync POST status %d\n", postResult["status"].as<int>());
-    }
+	JsonDocument postResult = fetch.post(POST_URL, payload, portMAX_DELAY);
+	if (!postResult["error"].isNull()) {
+		ESP_LOGW(
+		    "FETCH_DEMO",
+		    "sync post failed: %s",
+		    postResult["error"]["message"].as<const char *>()
+		);
+	} else {
+		Serial.printf("Sync POST status %d\n", postResult["status"].as<int>());
+	}
 
-    JsonDocument getResult = fetch.get(GET_URL, portMAX_DELAY);
-    if (!getResult["error"].isNull()) {
-        ESP_LOGW("FETCH_DEMO", "sync get failed: %s", getResult["error"]["message"].as<const char *>());
-    } else {
-        Serial.printf("Your IP: %s\n", getResult["body"].as<const char *>());
-    }
+	JsonDocument getResult = fetch.get(GET_URL, portMAX_DELAY);
+	if (!getResult["error"].isNull()) {
+		ESP_LOGW(
+		    "FETCH_DEMO",
+		    "sync get failed: %s",
+		    getResult["error"]["message"].as<const char *>()
+		);
+	} else {
+		Serial.printf("Your IP: %s\n", getResult["body"].as<const char *>());
+	}
 }
 
 void loop() {
-    if (!deinitialized && fetch.isInitialized() && millis() > 15000UL) {
-        fetch.deinit();
-        deinitialized = true;
-        ESP_LOGI("FETCH_DEMO", "ESPFetch deinitialized");
-    }
-    vTaskDelay(pdMS_TO_TICKS(1000));
+	if (!deinitialized && fetch.isInitialized() && millis() > 15000UL) {
+		fetch.deinit();
+		deinitialized = true;
+		ESP_LOGI("FETCH_DEMO", "ESPFetch deinitialized");
+	}
+	vTaskDelay(pdMS_TO_TICKS(1000));
 }
