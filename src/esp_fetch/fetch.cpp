@@ -16,826 +16,889 @@ namespace {
 constexpr const char *TAG = "ESPFetch";
 
 struct InternalFetchHeader {
-    FetchString name;
-    FetchString value;
+	FetchString name;
+	FetchString value;
 
-    InternalFetchHeader(const char *headerName, const char *headerValue, const FetchAllocator<char> &allocator)
-        : name(headerName ? headerName : "", allocator),
-          value(headerValue ? headerValue : "", allocator) {}
+	InternalFetchHeader(
+	    const char *headerName, const char *headerValue, const FetchAllocator<char> &allocator
+	)
+	    : name(headerName ? headerName : "", allocator),
+	      value(headerValue ? headerValue : "", allocator) {
+	}
 };
 
 using InternalFetchHeaderVector = FetchVector<InternalFetchHeader>;
 
-template <typename TString>
-bool equalsIgnoreCase(const TString &lhs, const char *rhs) {
-    if (!rhs) {
-        return false;
-    }
-    const size_t rhsLen = std::strlen(rhs);
-    if (lhs.size() != rhsLen) {
-        return false;
-    }
-    for (size_t i = 0; i < lhs.size(); ++i) {
-        if (std::tolower(static_cast<unsigned char>(lhs[i])) !=
-            std::tolower(static_cast<unsigned char>(rhs[i]))) {
-            return false;
-        }
-    }
-    return true;
+template <typename TString> bool equalsIgnoreCase(const TString &lhs, const char *rhs) {
+	if (!rhs) {
+		return false;
+	}
+	const size_t rhsLen = std::strlen(rhs);
+	if (lhs.size() != rhsLen) {
+		return false;
+	}
+	for (size_t i = 0; i < lhs.size(); ++i) {
+		if (std::tolower(static_cast<unsigned char>(lhs[i])) !=
+		    std::tolower(static_cast<unsigned char>(rhs[i]))) {
+			return false;
+		}
+	}
+	return true;
 }
 
 struct InternalFetchRequestOptions {
-    explicit InternalFetchRequestOptions(bool usePSRAMBuffers = false)
-        : charAllocator(usePSRAMBuffers),
-          headerAllocator(usePSRAMBuffers),
-          headers(headerAllocator) {}
+	explicit InternalFetchRequestOptions(bool usePSRAMBuffers = false)
+	    : charAllocator(usePSRAMBuffers), headerAllocator(usePSRAMBuffers),
+	      headers(headerAllocator) {
+	}
 
-    FetchAllocator<char> charAllocator;
-    FetchAllocator<InternalFetchHeader> headerAllocator;
+	FetchAllocator<char> charAllocator;
+	FetchAllocator<InternalFetchHeader> headerAllocator;
 
-    uint32_t timeoutMs = 0;
-    size_t maxBodyBytes = 0;
-    size_t maxHeaderBytes = 0;
-    size_t rxBufferSize = 0;
-    size_t txBufferSize = 0;
-    bool skipTlsCommonNameCheck = false;
-    bool allowRedirects = true;
-    InternalFetchHeaderVector headers;
-    const char *contentType = nullptr;
+	uint32_t timeoutMs = 0;
+	size_t maxBodyBytes = 0;
+	size_t maxHeaderBytes = 0;
+	size_t rxBufferSize = 0;
+	size_t txBufferSize = 0;
+	bool skipTlsCommonNameCheck = false;
+	bool allowRedirects = true;
+	InternalFetchHeaderVector headers;
+	const char *contentType = nullptr;
 };
 
 struct FetchStringWriter {
-    explicit FetchStringWriter(FetchString &target) : target_(target) {}
+	explicit FetchStringWriter(FetchString &target) : target_(target) {
+	}
 
-    size_t write(uint8_t value) {
-        target_.push_back(static_cast<char>(value));
-        return 1;
-    }
+	size_t write(uint8_t value) {
+		target_.push_back(static_cast<char>(value));
+		return 1;
+	}
 
-    size_t write(const uint8_t *buffer, size_t size) {
-        if (!buffer || size == 0) {
-            return 0;
-        }
-        target_.append(reinterpret_cast<const char *>(buffer), size);
-        return size;
-    }
+	size_t write(const uint8_t *buffer, size_t size) {
+		if (!buffer || size == 0) {
+			return 0;
+		}
+		target_.append(reinterpret_cast<const char *>(buffer), size);
+		return size;
+	}
 
   private:
-    FetchString &target_;
+	FetchString &target_;
 };
 
 bool startsWithIgnoreCase(const std::string &value, const char *prefix) {
-    if (!prefix) {
-        return false;
-    }
-    const size_t prefixLen = std::strlen(prefix);
-    if (value.size() < prefixLen) {
-        return false;
-    }
-    for (size_t i = 0; i < prefixLen; ++i) {
-        if (std::tolower(static_cast<unsigned char>(value[i])) !=
-            std::tolower(static_cast<unsigned char>(prefix[i]))) {
-            return false;
-        }
-    }
-    return true;
+	if (!prefix) {
+		return false;
+	}
+	const size_t prefixLen = std::strlen(prefix);
+	if (value.size() < prefixLen) {
+		return false;
+	}
+	for (size_t i = 0; i < prefixLen; ++i) {
+		if (std::tolower(static_cast<unsigned char>(value[i])) !=
+		    std::tolower(static_cast<unsigned char>(prefix[i]))) {
+			return false;
+		}
+	}
+	return true;
 }
 
 std::string trimUrl(const std::string &value) {
-    size_t start = 0;
-    while (start < value.size() && std::isspace(static_cast<unsigned char>(value[start]))) {
-        ++start;
-    }
-    size_t end = value.size();
-    while (end > start && std::isspace(static_cast<unsigned char>(value[end - 1]))) {
-        --end;
-    }
-    return value.substr(start, end - start);
+	size_t start = 0;
+	while (start < value.size() && std::isspace(static_cast<unsigned char>(value[start]))) {
+		++start;
+	}
+	size_t end = value.size();
+	while (end > start && std::isspace(static_cast<unsigned char>(value[end - 1]))) {
+		--end;
+	}
+	return value.substr(start, end - start);
 }
 
 bool normalizeScheme(std::string &url, const char *scheme) {
-    const size_t schemeLen = std::strlen(scheme);
-    if (url.size() <= schemeLen || !startsWithIgnoreCase(url, scheme)) {
-        return false;
-    }
-    if (url[schemeLen] != ':') {
-        return false;
-    }
+	const size_t schemeLen = std::strlen(scheme);
+	if (url.size() <= schemeLen || !startsWithIgnoreCase(url, scheme)) {
+		return false;
+	}
+	if (url[schemeLen] != ':') {
+		return false;
+	}
 
-    size_t slashPos = schemeLen + 1;
-    size_t slashCount = 0;
-    while (slashPos + slashCount < url.size() && url[slashPos + slashCount] == '/') {
-        ++slashCount;
-    }
-    if (slashCount == 2) {
-        return false;
-    }
-    if (slashCount > 2) {
-        url.erase(slashPos + 2, slashCount - 2);
-        return true;
-    }
-    if (slashCount == 1) {
-        url.insert(slashPos, "/");
-        return true;
-    }
-    url.insert(slashPos, "//");
-    return true;
+	size_t slashPos = schemeLen + 1;
+	size_t slashCount = 0;
+	while (slashPos + slashCount < url.size() && url[slashPos + slashCount] == '/') {
+		++slashCount;
+	}
+	if (slashCount == 2) {
+		return false;
+	}
+	if (slashCount > 2) {
+		url.erase(slashPos + 2, slashCount - 2);
+		return true;
+	}
+	if (slashCount == 1) {
+		url.insert(slashPos, "/");
+		return true;
+	}
+	url.insert(slashPos, "//");
+	return true;
 }
 
 bool stripLeadingHostColon(std::string &url) {
-    const size_t schemePos = url.find("://");
-    if (schemePos == std::string::npos) {
-        return false;
-    }
-    if (!startsWithIgnoreCase(url, "http") && !startsWithIgnoreCase(url, "https")) {
-        return false;
-    }
-    const size_t hostPos = schemePos + 3;
-    if (hostPos >= url.size() || url[hostPos] != ':') {
-        return false;
-    }
-    url.erase(hostPos, 1);
-    return true;
+	const size_t schemePos = url.find("://");
+	if (schemePos == std::string::npos) {
+		return false;
+	}
+	if (!startsWithIgnoreCase(url, "http") && !startsWithIgnoreCase(url, "https")) {
+		return false;
+	}
+	const size_t hostPos = schemePos + 3;
+	if (hostPos >= url.size() || url[hostPos] != ':') {
+		return false;
+	}
+	url.erase(hostPos, 1);
+	return true;
 }
 
 std::string normalizeUrl(const std::string &url) {
-    std::string normalized = trimUrl(url);
-    bool changed = false;
-    changed = normalizeScheme(normalized, "https") || changed;
-    changed = normalizeScheme(normalized, "http") || changed;
-    changed = stripLeadingHostColon(normalized) || changed;
-    if (changed) {
-        ESP_LOGW(TAG, "Normalized URL to %s", normalized.c_str());
-    }
-    return normalized;
+	std::string normalized = trimUrl(url);
+	bool changed = false;
+	changed = normalizeScheme(normalized, "https") || changed;
+	changed = normalizeScheme(normalized, "http") || changed;
+	changed = stripLeadingHostColon(normalized) || changed;
+	if (changed) {
+		ESP_LOGW(TAG, "Normalized URL to %s", normalized.c_str());
+	}
+	return normalized;
 }
 
 int resolveHttpBufferSize(const char *label, size_t requestValue, size_t configValue) {
-    const size_t selected = requestValue ? requestValue : configValue;
-    if (selected == 0) {
-        return 0;
-    }
-    if (selected > static_cast<size_t>(INT_MAX)) {
-        ESP_LOGW(TAG, "%s exceeds INT_MAX, clamping to %d bytes", label, INT_MAX);
-        return INT_MAX;
-    }
-    return static_cast<int>(selected);
+	const size_t selected = requestValue ? requestValue : configValue;
+	if (selected == 0) {
+		return 0;
+	}
+	if (selected > static_cast<size_t>(INT_MAX)) {
+		ESP_LOGW(TAG, "%s exceeds INT_MAX, clamping to %d bytes", label, INT_MAX);
+		return INT_MAX;
+	}
+	return static_cast<int>(selected);
 }
-}  // namespace
+} // namespace
 
 struct ESPFetch::FetchResponse {
-    explicit FetchResponse(bool usePSRAMBuffers = false)
-        : charAllocator(usePSRAMBuffers),
-          headerAllocator(usePSRAMBuffers),
-          body(charAllocator),
-          headers(headerAllocator) {}
+	explicit FetchResponse(bool usePSRAMBuffers = false)
+	    : charAllocator(usePSRAMBuffers), headerAllocator(usePSRAMBuffers), body(charAllocator),
+	      headers(headerAllocator) {
+	}
 
-    esp_err_t error = ESP_OK;
-    int statusCode = 0;
-    FetchAllocator<char> charAllocator;
-    FetchAllocator<InternalFetchHeader> headerAllocator;
-    FetchString body;
-    InternalFetchHeaderVector headers;
-    bool bodyTruncated = false;
-    bool headersTruncated = false;
-    int64_t durationUs = 0;
+	esp_err_t error = ESP_OK;
+	int statusCode = 0;
+	FetchAllocator<char> charAllocator;
+	FetchAllocator<InternalFetchHeader> headerAllocator;
+	FetchString body;
+	InternalFetchHeaderVector headers;
+	bool bodyTruncated = false;
+	bool headersTruncated = false;
+	int64_t durationUs = 0;
 };
 
 struct ESPFetch::SyncHandle {
-    SyncHandle() = default;
-    ~SyncHandle() {
-        if (done) {
-            vSemaphoreDelete(done);
-            done = nullptr;
-        }
-    }
+	SyncHandle() = default;
+	~SyncHandle() {
+		if (done) {
+			vSemaphoreDelete(done);
+			done = nullptr;
+		}
+	}
 
-    SemaphoreHandle_t done = nullptr;
-    bool ready = false;
-    JsonDocument doc;
+	SemaphoreHandle_t done = nullptr;
+	bool ready = false;
+	JsonDocument doc;
 };
 
 struct ESPFetch::FetchJob {
-    explicit FetchJob(bool usePSRAMBuffers = false)
-        : stringAllocator(usePSRAMBuffers),
-          url(stringAllocator),
-          body(stringAllocator),
-          requestOptions(usePSRAMBuffers),
-          response(usePSRAMBuffers) {}
+	explicit FetchJob(bool usePSRAMBuffers = false)
+	    : stringAllocator(usePSRAMBuffers), url(stringAllocator), body(stringAllocator),
+	      requestOptions(usePSRAMBuffers), response(usePSRAMBuffers) {
+	}
 
-    ESPFetch *owner = nullptr;
-    FetchAllocator<char> stringAllocator;
-    FetchString url;
-    esp_http_client_method_t method = HTTP_METHOD_GET;
-    FetchString body;
-    InternalFetchRequestOptions requestOptions;
+	ESPFetch *owner = nullptr;
+	FetchAllocator<char> stringAllocator;
+	FetchString url;
+	esp_http_client_method_t method = HTTP_METHOD_GET;
+	FetchString body;
+	InternalFetchRequestOptions requestOptions;
 
-    // JSON mode callback (existing APIs)
-    FetchCallback callback;
-    std::shared_ptr<SyncHandle> syncHandle;
+	// JSON mode callback (existing APIs)
+	FetchCallback callback;
+	std::shared_ptr<SyncHandle> syncHandle;
 
-    // Limits (used differently depending on mode)
-    size_t bodyLimit = 0;
-    size_t headerLimit = 0;
+	// Limits (used differently depending on mode)
+	size_t bodyLimit = 0;
+	size_t headerLimit = 0;
 
-    // Response bookkeeping
-    FetchResponse response;
+	// Response bookkeeping
+	FetchResponse response;
 
-    // Stream mode (new APIs)
-    bool isStream = false;
-    FetchChunkCallback onChunk;
-    FetchStreamCallback onDone;
-    size_t receivedBytes = 0;
-    esp_err_t streamAbortError = ESP_OK;
+	// Stream mode (new APIs)
+	bool isStream = false;
+	FetchChunkCallback onChunk;
+	FetchStreamCallback onDone;
+	size_t receivedBytes = 0;
+	esp_err_t streamAbortError = ESP_OK;
 };
 
 ESPFetch::~ESPFetch() {
-    deinit();
+	deinit();
 }
 
 bool ESPFetch::init(const FetchConfig &config) {
-    if (isInitialized()) {
-        deinit();
-    }
+	if (isInitialized()) {
+		deinit();
+	}
 
-    if (config.maxConcurrentRequests == 0) {
-        ESP_LOGE(TAG, "maxConcurrentRequests must be > 0");
-        return false;
-    }
+	if (config.maxConcurrentRequests == 0) {
+		ESP_LOGE(TAG, "maxConcurrentRequests must be > 0");
+		return false;
+	}
 
-    _config = config;
-    _slotSemaphore = xSemaphoreCreateCounting(_config.maxConcurrentRequests, _config.maxConcurrentRequests);
-    if (!_slotSemaphore) {
-        ESP_LOGE(TAG, "Failed to create fetch semaphore");
-        return false;
-    }
+	_config = config;
+	_slotSemaphore =
+	    xSemaphoreCreateCounting(_config.maxConcurrentRequests, _config.maxConcurrentRequests);
+	if (!_slotSemaphore) {
+		ESP_LOGE(TAG, "Failed to create fetch semaphore");
+		return false;
+	}
 
-    _teardownRequested.store(false, std::memory_order_release);
-    _initialized.store(true, std::memory_order_release);
-    return true;
+	_teardownRequested.store(false, std::memory_order_release);
+	_initialized.store(true, std::memory_order_release);
+	return true;
 }
 
 void ESPFetch::deinit() {
-    if (!isInitialized() && _activeTasks.load(std::memory_order_acquire) == 0 && _slotSemaphore == nullptr) {
-        return;
-    }
+	if (!isInitialized() && _activeTasks.load(std::memory_order_acquire) == 0 &&
+	    _slotSemaphore == nullptr) {
+		return;
+	}
 
-    _teardownRequested.store(true, std::memory_order_release);
-    _initialized.store(false, std::memory_order_release);
+	_teardownRequested.store(true, std::memory_order_release);
+	_initialized.store(false, std::memory_order_release);
 
-    while (_activeTasks.load(std::memory_order_acquire) > 0) {
+	while (_activeTasks.load(std::memory_order_acquire) > 0) {
 #if defined(INCLUDE_xTaskGetSchedulerState) && (INCLUDE_xTaskGetSchedulerState == 1)
-        if (xTaskGetSchedulerState() == taskSCHEDULER_NOT_STARTED) {
-            break;
-        }
+		if (xTaskGetSchedulerState() == taskSCHEDULER_NOT_STARTED) {
+			break;
+		}
 #endif
-        vTaskDelay(pdMS_TO_TICKS(1));
-    }
+		vTaskDelay(pdMS_TO_TICKS(1));
+	}
 
-    if (_slotSemaphore) {
-        vSemaphoreDelete(_slotSemaphore);
-        _slotSemaphore = nullptr;
-    }
+	if (_slotSemaphore) {
+		vSemaphoreDelete(_slotSemaphore);
+		_slotSemaphore = nullptr;
+	}
 
-    _teardownRequested.store(false, std::memory_order_release);
+	_teardownRequested.store(false, std::memory_order_release);
 }
 
 bool ESPFetch::isInitialized() const {
-    return _initialized.load(std::memory_order_acquire);
+	return _initialized.load(std::memory_order_acquire);
 }
 
 bool ESPFetch::get(const char *url, FetchCallback callback, const FetchRequestOptions &options) {
-    if (!url) {
-        return false;
-    }
-    return enqueueRequest(
-        url,
-        HTTP_METHOD_GET,
-        FetchString{FetchAllocator<char>(_config.usePSRAMBuffers)},
-        std::move(callback),
-        nullptr,
-        options);
+	if (!url) {
+		return false;
+	}
+	return enqueueRequest(
+	    url,
+	    HTTP_METHOD_GET,
+	    FetchString{FetchAllocator<char>(_config.usePSRAMBuffers)},
+	    std::move(callback),
+	    nullptr,
+	    options
+	);
 }
 
 bool ESPFetch::get(const String &url, FetchCallback callback, const FetchRequestOptions &options) {
-    return get(url.c_str(), std::move(callback), options);
+	return get(url.c_str(), std::move(callback), options);
 }
 
-JsonDocument ESPFetch::get(const char *url, TickType_t waitTicks, const FetchRequestOptions &options) {
-    if (!url) {
-        JsonDocument doc;
-        doc["ok"] = false;
-        doc["error"]["message"] = "url is null";
-        return doc;
-    }
-    auto handle = std::make_shared<SyncHandle>();
-    handle->done = xSemaphoreCreateBinary();
-    if (!handle->done) {
-        JsonDocument doc;
-        doc["ok"] = false;
-        doc["error"]["message"] = "failed to allocate sync semaphore";
-        return doc;
-    }
+JsonDocument
+ESPFetch::get(const char *url, TickType_t waitTicks, const FetchRequestOptions &options) {
+	if (!url) {
+		JsonDocument doc;
+		doc["ok"] = false;
+		doc["error"]["message"] = "url is null";
+		return doc;
+	}
+	auto handle = std::make_shared<SyncHandle>();
+	handle->done = xSemaphoreCreateBinary();
+	if (!handle->done) {
+		JsonDocument doc;
+		doc["ok"] = false;
+		doc["error"]["message"] = "failed to allocate sync semaphore";
+		return doc;
+	}
 
-    if (!enqueueRequest(url,
-                        HTTP_METHOD_GET,
-                        FetchString{FetchAllocator<char>(_config.usePSRAMBuffers)},
-                        nullptr,
-                        handle,
-                        options)) {
-        JsonDocument doc;
-        doc["ok"] = false;
-        doc["error"]["message"] = "failed to start http get";
-        return doc;
-    }
+	if (!enqueueRequest(
+	        url,
+	        HTTP_METHOD_GET,
+	        FetchString{FetchAllocator<char>(_config.usePSRAMBuffers)},
+	        nullptr,
+	        handle,
+	        options
+	    )) {
+		JsonDocument doc;
+		doc["ok"] = false;
+		doc["error"]["message"] = "failed to start http get";
+		return doc;
+	}
 
-    return waitForResult(handle, waitTicks);
+	return waitForResult(handle, waitTicks);
 }
 
-JsonDocument ESPFetch::get(const String &url, TickType_t waitTicks, const FetchRequestOptions &options) {
-    return get(url.c_str(), waitTicks, options);
+JsonDocument
+ESPFetch::get(const String &url, TickType_t waitTicks, const FetchRequestOptions &options) {
+	return get(url.c_str(), waitTicks, options);
 }
 
-bool ESPFetch::post(const char *url,
-                    const JsonDocument &payload,
-                    FetchCallback callback,
-                    const FetchRequestOptions &options) {
-    if (!url) {
-        return false;
-    }
-    FetchString body{FetchAllocator<char>(_config.usePSRAMBuffers)};
-    FetchStringWriter writer(body);
-    serializeJson(payload, writer);
-    return enqueueRequest(url, HTTP_METHOD_POST, std::move(body), std::move(callback), nullptr, options);
+bool ESPFetch::post(
+    const char *url,
+    const JsonDocument &payload,
+    FetchCallback callback,
+    const FetchRequestOptions &options
+) {
+	if (!url) {
+		return false;
+	}
+	FetchString body{FetchAllocator<char>(_config.usePSRAMBuffers)};
+	FetchStringWriter writer(body);
+	serializeJson(payload, writer);
+	return enqueueRequest(
+	    url,
+	    HTTP_METHOD_POST,
+	    std::move(body),
+	    std::move(callback),
+	    nullptr,
+	    options
+	);
 }
 
-bool ESPFetch::post(const String &url,
-                    const JsonDocument &payload,
-                    FetchCallback callback,
-                    const FetchRequestOptions &options) {
-    return post(url.c_str(), payload, std::move(callback), options);
+bool ESPFetch::post(
+    const String &url,
+    const JsonDocument &payload,
+    FetchCallback callback,
+    const FetchRequestOptions &options
+) {
+	return post(url.c_str(), payload, std::move(callback), options);
 }
 
-JsonDocument ESPFetch::post(const char *url,
-                            const JsonDocument &payload,
-                            TickType_t waitTicks,
-                            const FetchRequestOptions &options) {
-    if (!url) {
-        JsonDocument doc;
-        doc["ok"] = false;
-        doc["error"]["message"] = "url is null";
-        return doc;
-    }
-    FetchString body{FetchAllocator<char>(_config.usePSRAMBuffers)};
-    FetchStringWriter writer(body);
-    serializeJson(payload, writer);
+JsonDocument ESPFetch::post(
+    const char *url,
+    const JsonDocument &payload,
+    TickType_t waitTicks,
+    const FetchRequestOptions &options
+) {
+	if (!url) {
+		JsonDocument doc;
+		doc["ok"] = false;
+		doc["error"]["message"] = "url is null";
+		return doc;
+	}
+	FetchString body{FetchAllocator<char>(_config.usePSRAMBuffers)};
+	FetchStringWriter writer(body);
+	serializeJson(payload, writer);
 
-    auto handle = std::make_shared<SyncHandle>();
-    handle->done = xSemaphoreCreateBinary();
-    if (!handle->done) {
-        JsonDocument doc;
-        doc["ok"] = false;
-        doc["error"]["message"] = "failed to allocate sync semaphore";
-        return doc;
-    }
+	auto handle = std::make_shared<SyncHandle>();
+	handle->done = xSemaphoreCreateBinary();
+	if (!handle->done) {
+		JsonDocument doc;
+		doc["ok"] = false;
+		doc["error"]["message"] = "failed to allocate sync semaphore";
+		return doc;
+	}
 
-    if (!enqueueRequest(url, HTTP_METHOD_POST, std::move(body), nullptr, handle, options)) {
-        JsonDocument doc;
-        doc["ok"] = false;
-        doc["error"]["message"] = "failed to start http post";
-        return doc;
-    }
+	if (!enqueueRequest(url, HTTP_METHOD_POST, std::move(body), nullptr, handle, options)) {
+		JsonDocument doc;
+		doc["ok"] = false;
+		doc["error"]["message"] = "failed to start http post";
+		return doc;
+	}
 
-    return waitForResult(handle, waitTicks);
+	return waitForResult(handle, waitTicks);
 }
 
-JsonDocument ESPFetch::post(const String &url,
-                            const JsonDocument &payload,
-                            TickType_t waitTicks,
-                            const FetchRequestOptions &options) {
-    return post(url.c_str(), payload, waitTicks, options);
+JsonDocument ESPFetch::post(
+    const String &url,
+    const JsonDocument &payload,
+    TickType_t waitTicks,
+    const FetchRequestOptions &options
+) {
+	return post(url.c_str(), payload, waitTicks, options);
 }
 
 // ------------------------------
 // Stream API (new)
 // ------------------------------
-bool ESPFetch::getStream(const char *url,
-                         FetchChunkCallback onChunk,
-                         FetchStreamCallback onDone,
-                         const FetchRequestOptions &options) {
-    if (!url || !onChunk) {
-        return false;
-    }
-    return enqueueStreamRequest(url, std::move(onChunk), std::move(onDone), options);
+bool ESPFetch::getStream(
+    const char *url,
+    FetchChunkCallback onChunk,
+    FetchStreamCallback onDone,
+    const FetchRequestOptions &options
+) {
+	if (!url || !onChunk) {
+		return false;
+	}
+	return enqueueStreamRequest(url, std::move(onChunk), std::move(onDone), options);
 }
 
-bool ESPFetch::getStream(const String &url,
-                         FetchChunkCallback onChunk,
-                         FetchStreamCallback onDone,
-                         const FetchRequestOptions &options) {
-    return getStream(url.c_str(), std::move(onChunk), std::move(onDone), options);
+bool ESPFetch::getStream(
+    const String &url,
+    FetchChunkCallback onChunk,
+    FetchStreamCallback onDone,
+    const FetchRequestOptions &options
+) {
+	return getStream(url.c_str(), std::move(onChunk), std::move(onDone), options);
 }
 
-bool ESPFetch::enqueueRequest(const std::string &url,
-                              esp_http_client_method_t method,
-                              FetchString &&body,
-                              FetchCallback callback,
-                              std::shared_ptr<SyncHandle> syncHandle,
-                              const FetchRequestOptions &options) {
-    if (!isInitialized()) {
-        ESP_LOGE(TAG, "ESPFetch not initialized");
-        return false;
-    }
+bool ESPFetch::enqueueRequest(
+    const std::string &url,
+    esp_http_client_method_t method,
+    FetchString &&body,
+    FetchCallback callback,
+    std::shared_ptr<SyncHandle> syncHandle,
+    const FetchRequestOptions &options
+) {
+	if (!isInitialized()) {
+		ESP_LOGE(TAG, "ESPFetch not initialized");
+		return false;
+	}
 
-    if (xSemaphoreTake(_slotSemaphore, _config.slotAcquireTicks) != pdTRUE) {
-        ESP_LOGW(TAG, "No available fetch slots");
-        return false;
-    }
+	if (xSemaphoreTake(_slotSemaphore, _config.slotAcquireTicks) != pdTRUE) {
+		ESP_LOGW(TAG, "No available fetch slots");
+		return false;
+	}
 
-    auto job = std::make_unique<FetchJob>(_config.usePSRAMBuffers);
-    job->owner = this;
-    const std::string normalizedUrl = normalizeUrl(url);
-    job->url.assign(normalizedUrl.c_str(), normalizedUrl.size());
-    job->method = method;
-    job->body = std::move(body);
-    job->requestOptions.timeoutMs = options.timeoutMs;
-    job->requestOptions.maxBodyBytes = options.maxBodyBytes;
-    job->requestOptions.maxHeaderBytes = options.maxHeaderBytes;
-    job->requestOptions.rxBufferSize = options.rxBufferSize;
-    job->requestOptions.txBufferSize = options.txBufferSize;
-    job->requestOptions.skipTlsCommonNameCheck = options.skipTlsCommonNameCheck;
-    job->requestOptions.allowRedirects = options.allowRedirects;
-    job->requestOptions.contentType = options.contentType;
-    job->requestOptions.headers.clear();
-    job->requestOptions.headers.reserve(options.headers.size());
-    for (const auto &header : options.headers) {
-        job->requestOptions.headers.emplace_back(header.name.c_str(), header.value.c_str(), job->stringAllocator);
-    }
-    job->callback = std::move(callback);
-    job->syncHandle = std::move(syncHandle);
+	auto job = std::make_unique<FetchJob>(_config.usePSRAMBuffers);
+	job->owner = this;
+	const std::string normalizedUrl = normalizeUrl(url);
+	job->url.assign(normalizedUrl.c_str(), normalizedUrl.size());
+	job->method = method;
+	job->body = std::move(body);
+	job->requestOptions.timeoutMs = options.timeoutMs;
+	job->requestOptions.maxBodyBytes = options.maxBodyBytes;
+	job->requestOptions.maxHeaderBytes = options.maxHeaderBytes;
+	job->requestOptions.rxBufferSize = options.rxBufferSize;
+	job->requestOptions.txBufferSize = options.txBufferSize;
+	job->requestOptions.skipTlsCommonNameCheck = options.skipTlsCommonNameCheck;
+	job->requestOptions.allowRedirects = options.allowRedirects;
+	job->requestOptions.contentType = options.contentType;
+	job->requestOptions.headers.clear();
+	job->requestOptions.headers.reserve(options.headers.size());
+	for (const auto &header : options.headers) {
+		job->requestOptions.headers
+		    .emplace_back(header.name.c_str(), header.value.c_str(), job->stringAllocator);
+	}
+	job->callback = std::move(callback);
+	job->syncHandle = std::move(syncHandle);
 
-    job->bodyLimit = job->requestOptions.maxBodyBytes ? job->requestOptions.maxBodyBytes : _config.maxBodyBytes;
-    job->headerLimit =
-        job->requestOptions.maxHeaderBytes ? job->requestOptions.maxHeaderBytes : _config.maxHeaderBytes;
-    if (job->bodyLimit == 0) {
-        job->bodyLimit = std::numeric_limits<size_t>::max();
-    }
-    if (job->headerLimit == 0) {
-        job->headerLimit = std::numeric_limits<size_t>::max();
-    }
+	job->bodyLimit =
+	    job->requestOptions.maxBodyBytes ? job->requestOptions.maxBodyBytes : _config.maxBodyBytes;
+	job->headerLimit = job->requestOptions.maxHeaderBytes ? job->requestOptions.maxHeaderBytes
+	                                                      : _config.maxHeaderBytes;
+	if (job->bodyLimit == 0) {
+		job->bodyLimit = std::numeric_limits<size_t>::max();
+	}
+	if (job->headerLimit == 0) {
+		job->headerLimit = std::numeric_limits<size_t>::max();
+	}
 
-    size_t reserveBytes =
-        job->bodyLimit == std::numeric_limits<size_t>::max()
-            ? static_cast<size_t>(1024)
-            : std::min(job->bodyLimit, static_cast<size_t>(1024));
-    job->response.body.reserve(reserveBytes);
+	size_t reserveBytes = job->bodyLimit == std::numeric_limits<size_t>::max()
+	                          ? static_cast<size_t>(1024)
+	                          : std::min(job->bodyLimit, static_cast<size_t>(1024));
+	job->response.body.reserve(reserveBytes);
 
-    size_t stackSize = _config.stackSize;
-    if (stackSize == 0) {
-        ESP_LOGE(TAG, "Invalid stack size for fetch worker");
-        xSemaphoreGive(_slotSemaphore);
-        return false;
-    }
+	size_t stackSize = _config.stackSize;
+	if (stackSize == 0) {
+		ESP_LOGE(TAG, "Invalid stack size for fetch worker");
+		xSemaphoreGive(_slotSemaphore);
+		return false;
+	}
 
-    _activeTasks.fetch_add(1, std::memory_order_acq_rel);
+	_activeTasks.fetch_add(1, std::memory_order_acq_rel);
 
-    FetchJob *jobPtr = job.release();
-    TaskHandle_t taskHandle = nullptr;
-    const BaseType_t created = xTaskCreatePinnedToCore(
-        &ESPFetch::requestTask, "esp-fetch", stackSize, jobPtr, _config.priority, &taskHandle, _config.coreId);
-    if (created != pdPASS) {
-        ESP_LOGE(TAG, "Failed to spawn fetch task");
-        _activeTasks.fetch_sub(1, std::memory_order_acq_rel);
-        delete jobPtr;
-        xSemaphoreGive(_slotSemaphore);
-        return false;
-    }
-    return true;
+	FetchJob *jobPtr = job.release();
+	TaskHandle_t taskHandle = nullptr;
+	const BaseType_t created = xTaskCreatePinnedToCore(
+	    &ESPFetch::requestTask,
+	    "esp-fetch",
+	    stackSize,
+	    jobPtr,
+	    _config.priority,
+	    &taskHandle,
+	    _config.coreId
+	);
+	if (created != pdPASS) {
+		ESP_LOGE(TAG, "Failed to spawn fetch task");
+		_activeTasks.fetch_sub(1, std::memory_order_acq_rel);
+		delete jobPtr;
+		xSemaphoreGive(_slotSemaphore);
+		return false;
+	}
+	return true;
 }
 
-bool ESPFetch::enqueueStreamRequest(const std::string &url,
-                                    FetchChunkCallback onChunk,
-                                    FetchStreamCallback onDone,
-                                    const FetchRequestOptions &options) {
-    if (!isInitialized()) {
-        ESP_LOGE(TAG, "ESPFetch not initialized");
-        return false;
-    }
+bool ESPFetch::enqueueStreamRequest(
+    const std::string &url,
+    FetchChunkCallback onChunk,
+    FetchStreamCallback onDone,
+    const FetchRequestOptions &options
+) {
+	if (!isInitialized()) {
+		ESP_LOGE(TAG, "ESPFetch not initialized");
+		return false;
+	}
 
-    if (!onChunk) {
-        ESP_LOGE(TAG, "getStream requires onChunk callback");
-        return false;
-    }
+	if (!onChunk) {
+		ESP_LOGE(TAG, "getStream requires onChunk callback");
+		return false;
+	}
 
-    if (xSemaphoreTake(_slotSemaphore, _config.slotAcquireTicks) != pdTRUE) {
-        ESP_LOGW(TAG, "No available fetch slots");
-        return false;
-    }
+	if (xSemaphoreTake(_slotSemaphore, _config.slotAcquireTicks) != pdTRUE) {
+		ESP_LOGW(TAG, "No available fetch slots");
+		return false;
+	}
 
-    auto job = std::make_unique<FetchJob>(_config.usePSRAMBuffers);
-    job->owner = this;
-    const std::string normalizedUrl = normalizeUrl(url);
-    job->url.assign(normalizedUrl.c_str(), normalizedUrl.size());
-    job->method = HTTP_METHOD_GET;
-    job->requestOptions.timeoutMs = options.timeoutMs;
-    job->requestOptions.maxBodyBytes = options.maxBodyBytes;
-    job->requestOptions.maxHeaderBytes = options.maxHeaderBytes;
-    job->requestOptions.rxBufferSize = options.rxBufferSize;
-    job->requestOptions.txBufferSize = options.txBufferSize;
-    job->requestOptions.skipTlsCommonNameCheck = options.skipTlsCommonNameCheck;
-    job->requestOptions.allowRedirects = options.allowRedirects;
-    job->requestOptions.contentType = options.contentType;
-    job->requestOptions.headers.clear();
-    job->requestOptions.headers.reserve(options.headers.size());
-    for (const auto &header : options.headers) {
-        job->requestOptions.headers.emplace_back(header.name.c_str(), header.value.c_str(), job->stringAllocator);
-    }
+	auto job = std::make_unique<FetchJob>(_config.usePSRAMBuffers);
+	job->owner = this;
+	const std::string normalizedUrl = normalizeUrl(url);
+	job->url.assign(normalizedUrl.c_str(), normalizedUrl.size());
+	job->method = HTTP_METHOD_GET;
+	job->requestOptions.timeoutMs = options.timeoutMs;
+	job->requestOptions.maxBodyBytes = options.maxBodyBytes;
+	job->requestOptions.maxHeaderBytes = options.maxHeaderBytes;
+	job->requestOptions.rxBufferSize = options.rxBufferSize;
+	job->requestOptions.txBufferSize = options.txBufferSize;
+	job->requestOptions.skipTlsCommonNameCheck = options.skipTlsCommonNameCheck;
+	job->requestOptions.allowRedirects = options.allowRedirects;
+	job->requestOptions.contentType = options.contentType;
+	job->requestOptions.headers.clear();
+	job->requestOptions.headers.reserve(options.headers.size());
+	for (const auto &header : options.headers) {
+		job->requestOptions.headers
+		    .emplace_back(header.name.c_str(), header.value.c_str(), job->stringAllocator);
+	}
 
-    job->isStream = true;
-    job->onChunk = std::move(onChunk);
-    job->onDone = std::move(onDone);
-    job->receivedBytes = 0;
-    job->streamAbortError = ESP_OK;
+	job->isStream = true;
+	job->onChunk = std::move(onChunk);
+	job->onDone = std::move(onDone);
+	job->receivedBytes = 0;
+	job->streamAbortError = ESP_OK;
 
-    // For streaming, default to "unlimited" unless the caller explicitly sets maxBodyBytes.
-    job->bodyLimit = job->requestOptions.maxBodyBytes ? job->requestOptions.maxBodyBytes : std::numeric_limits<size_t>::max();
-    job->headerLimit =
-        job->requestOptions.maxHeaderBytes ? job->requestOptions.maxHeaderBytes : _config.maxHeaderBytes;
-    if (job->headerLimit == 0) {
-        job->headerLimit = std::numeric_limits<size_t>::max();
-    }
+	// For streaming, default to "unlimited" unless the caller explicitly sets maxBodyBytes.
+	job->bodyLimit = job->requestOptions.maxBodyBytes ? job->requestOptions.maxBodyBytes
+	                                                  : std::numeric_limits<size_t>::max();
+	job->headerLimit = job->requestOptions.maxHeaderBytes ? job->requestOptions.maxHeaderBytes
+	                                                      : _config.maxHeaderBytes;
+	if (job->headerLimit == 0) {
+		job->headerLimit = std::numeric_limits<size_t>::max();
+	}
 
-    size_t stackSize = _config.stackSize;
-    if (stackSize == 0) {
-        ESP_LOGE(TAG, "Invalid stack size for fetch worker");
-        xSemaphoreGive(_slotSemaphore);
-        return false;
-    }
+	size_t stackSize = _config.stackSize;
+	if (stackSize == 0) {
+		ESP_LOGE(TAG, "Invalid stack size for fetch worker");
+		xSemaphoreGive(_slotSemaphore);
+		return false;
+	}
 
-    _activeTasks.fetch_add(1, std::memory_order_acq_rel);
+	_activeTasks.fetch_add(1, std::memory_order_acq_rel);
 
-    FetchJob *jobPtr = job.release();
-    TaskHandle_t taskHandle = nullptr;
-    const BaseType_t created = xTaskCreatePinnedToCore(
-        &ESPFetch::requestTask, "esp-fetch", stackSize, jobPtr, _config.priority, &taskHandle, _config.coreId);
-    if (created != pdPASS) {
-        ESP_LOGE(TAG, "Failed to spawn fetch task");
-        _activeTasks.fetch_sub(1, std::memory_order_acq_rel);
-        delete jobPtr;
-        xSemaphoreGive(_slotSemaphore);
-        return false;
-    }
-    return true;
+	FetchJob *jobPtr = job.release();
+	TaskHandle_t taskHandle = nullptr;
+	const BaseType_t created = xTaskCreatePinnedToCore(
+	    &ESPFetch::requestTask,
+	    "esp-fetch",
+	    stackSize,
+	    jobPtr,
+	    _config.priority,
+	    &taskHandle,
+	    _config.coreId
+	);
+	if (created != pdPASS) {
+		ESP_LOGE(TAG, "Failed to spawn fetch task");
+		_activeTasks.fetch_sub(1, std::memory_order_acq_rel);
+		delete jobPtr;
+		xSemaphoreGive(_slotSemaphore);
+		return false;
+	}
+	return true;
 }
 
-JsonDocument ESPFetch::waitForResult(const std::shared_ptr<SyncHandle> &handle, TickType_t waitTicks) const {
-    JsonDocument doc;
-    if (!handle || !handle->done) {
-        doc["ok"] = false;
-        doc["error"]["message"] = "invalid sync handle";
-        return doc;
-    }
+JsonDocument
+ESPFetch::waitForResult(const std::shared_ptr<SyncHandle> &handle, TickType_t waitTicks) const {
+	JsonDocument doc;
+	if (!handle || !handle->done) {
+		doc["ok"] = false;
+		doc["error"]["message"] = "invalid sync handle";
+		return doc;
+	}
 
-    if (xSemaphoreTake(handle->done, waitTicks) == pdTRUE && handle->ready) {
-        doc = handle->doc;
-    } else if (handle->ready) {
-        doc = handle->doc;
-    } else {
-        doc["ok"] = false;
-        doc["error"]["message"] = "timeout waiting for fetch result";
-    }
-    return doc;
+	if (xSemaphoreTake(handle->done, waitTicks) == pdTRUE && handle->ready) {
+		doc = handle->doc;
+	} else if (handle->ready) {
+		doc = handle->doc;
+	} else {
+		doc["ok"] = false;
+		doc["error"]["message"] = "timeout waiting for fetch result";
+	}
+	return doc;
 }
 
 void ESPFetch::requestTask(void *arg) {
-    auto job = std::unique_ptr<FetchJob>(static_cast<FetchJob *>(arg));
-    if (!job || !job->owner) {
-        if (job && job->owner) {
-            job->owner->_activeTasks.fetch_sub(1, std::memory_order_acq_rel);
-        }
-        vTaskDelete(nullptr);
-        return;
-    }
-    job->owner->runJob(std::move(job));
-    vTaskDelete(nullptr);
+	auto job = std::unique_ptr<FetchJob>(static_cast<FetchJob *>(arg));
+	if (!job || !job->owner) {
+		if (job && job->owner) {
+			job->owner->_activeTasks.fetch_sub(1, std::memory_order_acq_rel);
+		}
+		vTaskDelete(nullptr);
+		return;
+	}
+	job->owner->runJob(std::move(job));
+	vTaskDelete(nullptr);
 }
 
 esp_err_t ESPFetch::handleHttpEvent(esp_http_client_event_t *event) {
-    if (!event || !event->user_data) {
-        return ESP_OK;
-    }
-    auto *job = static_cast<FetchJob *>(event->user_data);
-    if (job->owner && job->owner->_teardownRequested.load(std::memory_order_acquire)) {
-        if (job->isStream && job->streamAbortError == ESP_OK) {
-            job->streamAbortError = ESP_ERR_INVALID_STATE;
-        }
-        return ESP_FAIL;
-    }
+	if (!event || !event->user_data) {
+		return ESP_OK;
+	}
+	auto *job = static_cast<FetchJob *>(event->user_data);
+	if (job->owner && job->owner->_teardownRequested.load(std::memory_order_acquire)) {
+		if (job->isStream && job->streamAbortError == ESP_OK) {
+			job->streamAbortError = ESP_ERR_INVALID_STATE;
+		}
+		return ESP_FAIL;
+	}
 
-    switch (event->event_id) {
-        case HTTP_EVENT_ON_DATA:
-            if (event->data && event->data_len > 0) {
-                // Stream mode: do NOT buffer body; forward chunks directly.
-                if (job->isStream) {
-                    size_t toSend = static_cast<size_t>(event->data_len);
+	switch (event->event_id) {
+	case HTTP_EVENT_ON_DATA:
+		if (event->data && event->data_len > 0) {
+			// Stream mode: do NOT buffer body; forward chunks directly.
+			if (job->isStream) {
+				size_t toSend = static_cast<size_t>(event->data_len);
 
-                    if (job->bodyLimit != std::numeric_limits<size_t>::max()) {
-                        if (job->receivedBytes >= job->bodyLimit) {
-                            job->streamAbortError = ESP_ERR_INVALID_SIZE;
-                            return ESP_FAIL;
-                        }
-                        const size_t remaining = job->bodyLimit - job->receivedBytes;
-                        toSend = std::min(toSend, remaining);
-                    }
+				if (job->bodyLimit != std::numeric_limits<size_t>::max()) {
+					if (job->receivedBytes >= job->bodyLimit) {
+						job->streamAbortError = ESP_ERR_INVALID_SIZE;
+						return ESP_FAIL;
+					}
+					const size_t remaining = job->bodyLimit - job->receivedBytes;
+					toSend = std::min(toSend, remaining);
+				}
 
-                    if (toSend > 0 && job->onChunk) {
-                        const bool keepGoing = job->onChunk(event->data, toSend);
-                        if (!keepGoing) {
-                            // Caller requested abort; stop the stream and propagate a deterministic error.
-                            if (job->streamAbortError == ESP_OK) {
-                                job->streamAbortError = ESP_ERR_INVALID_STATE;
-                            }
-                            return ESP_FAIL;
-                        }
-                        job->receivedBytes += toSend;
-                    }
+				if (toSend > 0 && job->onChunk) {
+					const bool keepGoing = job->onChunk(event->data, toSend);
+					if (!keepGoing) {
+						// Caller requested abort; stop the stream and propagate a deterministic
+						// error.
+						if (job->streamAbortError == ESP_OK) {
+							job->streamAbortError = ESP_ERR_INVALID_STATE;
+						}
+						return ESP_FAIL;
+					}
+					job->receivedBytes += toSend;
+				}
 
-                    // If we had to clip the chunk, we've hit the limit and abort.
-                    if (toSend < static_cast<size_t>(event->data_len)) {
-                        job->streamAbortError = ESP_ERR_INVALID_SIZE;
-                        return ESP_FAIL;
-                    }
-                } else {
-                    // JSON mode (existing): buffer into response.body with limit/truncation.
-                    size_t available =
-                        job->response.body.size() < job->bodyLimit ? (job->bodyLimit - job->response.body.size()) : 0;
-                    size_t copyLen = std::min(available, static_cast<size_t>(event->data_len));
-                    if (copyLen > 0) {
-                        job->response.body.append(static_cast<const char *>(event->data), copyLen);
-                    }
-                    if (copyLen < static_cast<size_t>(event->data_len)) {
-                        job->response.bodyTruncated = true;
-                    }
-                }
-            }
-            break;
+				// If we had to clip the chunk, we've hit the limit and abort.
+				if (toSend < static_cast<size_t>(event->data_len)) {
+					job->streamAbortError = ESP_ERR_INVALID_SIZE;
+					return ESP_FAIL;
+				}
+			} else {
+				// JSON mode (existing): buffer into response.body with limit/truncation.
+				size_t available = job->response.body.size() < job->bodyLimit
+				                       ? (job->bodyLimit - job->response.body.size())
+				                       : 0;
+				size_t copyLen = std::min(available, static_cast<size_t>(event->data_len));
+				if (copyLen > 0) {
+					job->response.body.append(static_cast<const char *>(event->data), copyLen);
+				}
+				if (copyLen < static_cast<size_t>(event->data_len)) {
+					job->response.bodyTruncated = true;
+				}
+			}
+		}
+		break;
 
-        case HTTP_EVENT_ON_HEADER:
-            if (event->header_key && event->header_value) {
-                size_t projected = 0;
-                for (const auto &hdr : job->response.headers) {
-                    projected += hdr.name.size() + hdr.value.size();
-                }
-                projected += strlen(event->header_key) + strlen(event->header_value);
-                if (projected <= job->headerLimit) {
-                    job->response.headers.emplace_back(
-                        event->header_key, event->header_value, job->response.charAllocator);
-                } else {
-                    job->response.headersTruncated = true;
-                }
-            }
-            break;
+	case HTTP_EVENT_ON_HEADER:
+		if (event->header_key && event->header_value) {
+			size_t projected = 0;
+			for (const auto &hdr : job->response.headers) {
+				projected += hdr.name.size() + hdr.value.size();
+			}
+			projected += strlen(event->header_key) + strlen(event->header_value);
+			if (projected <= job->headerLimit) {
+				job->response.headers.emplace_back(
+				    event->header_key,
+				    event->header_value,
+				    job->response.charAllocator
+				);
+			} else {
+				job->response.headersTruncated = true;
+			}
+		}
+		break;
 
-        default:
-            break;
-    }
-    return ESP_OK;
+	default:
+		break;
+	}
+	return ESP_OK;
 }
 
 void ESPFetch::runJob(std::unique_ptr<FetchJob> job) {
-    if (!job) {
-        return;
-    }
+	if (!job) {
+		return;
+	}
 
-    const int64_t start = esp_timer_get_time();
+	const int64_t start = esp_timer_get_time();
 
-    if (_teardownRequested.load(std::memory_order_acquire)) {
-        job->response.error = ESP_ERR_INVALID_STATE;
-    } else {
-        esp_http_client_config_t config = {};
-        config.url = job->url.c_str();
-        config.method = job->method;
-        config.timeout_ms = job->requestOptions.timeoutMs ? job->requestOptions.timeoutMs : _config.defaultTimeoutMs;
-        config.buffer_size = resolveHttpBufferSize(
-            "RX buffer size", job->requestOptions.rxBufferSize, _config.rxBufferSize);
-        config.buffer_size_tx = resolveHttpBufferSize(
-            "TX buffer size", job->requestOptions.txBufferSize, _config.txBufferSize);
-        config.event_handler = &ESPFetch::handleHttpEvent;
-        config.user_data = job.get();
-        config.disable_auto_redirect = !(job->requestOptions.allowRedirects && _config.followRedirects);
-        config.skip_cert_common_name_check =
-            job->requestOptions.skipTlsCommonNameCheck || _config.skipTlsCommonNameCheck;
+	if (_teardownRequested.load(std::memory_order_acquire)) {
+		job->response.error = ESP_ERR_INVALID_STATE;
+	} else {
+		esp_http_client_config_t config = {};
+		config.url = job->url.c_str();
+		config.method = job->method;
+		config.timeout_ms = job->requestOptions.timeoutMs ? job->requestOptions.timeoutMs
+		                                                  : _config.defaultTimeoutMs;
+		config.buffer_size = resolveHttpBufferSize(
+		    "RX buffer size",
+		    job->requestOptions.rxBufferSize,
+		    _config.rxBufferSize
+		);
+		config.buffer_size_tx = resolveHttpBufferSize(
+		    "TX buffer size",
+		    job->requestOptions.txBufferSize,
+		    _config.txBufferSize
+		);
+		config.event_handler = &ESPFetch::handleHttpEvent;
+		config.user_data = job.get();
+		config.disable_auto_redirect =
+		    !(job->requestOptions.allowRedirects && _config.followRedirects);
+		config.skip_cert_common_name_check =
+		    job->requestOptions.skipTlsCommonNameCheck || _config.skipTlsCommonNameCheck;
 
-        esp_http_client_handle_t client = esp_http_client_init(&config);
-        if (!client) {
-            ESP_LOGE(TAG, "esp_http_client_init failed");
-            job->response.error = ESP_ERR_NO_MEM;
-        } else if (_teardownRequested.load(std::memory_order_acquire)) {
-            job->response.error = ESP_ERR_INVALID_STATE;
-            esp_http_client_cleanup(client);
-        } else {
-            auto hasHeader = [&](const char *key) {
-                for (const auto &header : job->requestOptions.headers) {
-                    if (equalsIgnoreCase(header.name, key)) {
-                        return true;
-                    }
-                }
-                return false;
-            };
+		esp_http_client_handle_t client = esp_http_client_init(&config);
+		if (!client) {
+			ESP_LOGE(TAG, "esp_http_client_init failed");
+			job->response.error = ESP_ERR_NO_MEM;
+		} else if (_teardownRequested.load(std::memory_order_acquire)) {
+			job->response.error = ESP_ERR_INVALID_STATE;
+			esp_http_client_cleanup(client);
+		} else {
+			auto hasHeader = [&](const char *key) {
+				for (const auto &header : job->requestOptions.headers) {
+					if (equalsIgnoreCase(header.name, key)) {
+						return true;
+					}
+				}
+				return false;
+			};
 
-            if (_config.userAgent && !hasHeader("User-Agent")) {
-                esp_http_client_set_header(client, "User-Agent", _config.userAgent);
-            }
+			if (_config.userAgent && !hasHeader("User-Agent")) {
+				esp_http_client_set_header(client, "User-Agent", _config.userAgent);
+			}
 
-            const char *contentType =
-                job->requestOptions.contentType ? job->requestOptions.contentType : _config.defaultContentType;
-            if (!job->isStream && job->method == HTTP_METHOD_POST && contentType && !hasHeader("Content-Type")) {
-                esp_http_client_set_header(client, "Content-Type", contentType);
-            }
+			const char *contentType = job->requestOptions.contentType
+			                              ? job->requestOptions.contentType
+			                              : _config.defaultContentType;
+			if (!job->isStream && job->method == HTTP_METHOD_POST && contentType &&
+			    !hasHeader("Content-Type")) {
+				esp_http_client_set_header(client, "Content-Type", contentType);
+			}
 
-            for (const auto &header : job->requestOptions.headers) {
-                esp_http_client_set_header(client, header.name.c_str(), header.value.c_str());
-            }
+			for (const auto &header : job->requestOptions.headers) {
+				esp_http_client_set_header(client, header.name.c_str(), header.value.c_str());
+			}
 
-            if (!job->body.empty()) {
-                esp_http_client_set_post_field(client, job->body.c_str(), job->body.length());
-            }
+			if (!job->body.empty()) {
+				esp_http_client_set_post_field(client, job->body.c_str(), job->body.length());
+			}
 
-            job->response.error = esp_http_client_perform(client);
-            if (job->response.error == ESP_OK) {
-                job->response.statusCode = esp_http_client_get_status_code(client);
-            }
-            // Preserve intentional stream abort reason (onChunk returned false or maxBodyBytes clipping),
-            // instead of losing it to generic ESP_FAIL from esp_http_client_perform().
-            if (job->isStream && job->response.error != ESP_OK && job->streamAbortError != ESP_OK) {
-                job->response.error = job->streamAbortError;
-            }
-            esp_http_client_cleanup(client);
-        }
-    }
+			job->response.error = esp_http_client_perform(client);
+			if (job->response.error == ESP_OK) {
+				job->response.statusCode = esp_http_client_get_status_code(client);
+			}
+			// Preserve intentional stream abort reason (onChunk returned false or maxBodyBytes
+			// clipping), instead of losing it to generic ESP_FAIL from esp_http_client_perform().
+			if (job->isStream && job->response.error != ESP_OK && job->streamAbortError != ESP_OK) {
+				job->response.error = job->streamAbortError;
+			}
+			esp_http_client_cleanup(client);
+		}
+	}
 
-    job->response.durationUs = esp_timer_get_time() - start;
+	job->response.durationUs = esp_timer_get_time() - start;
 
-    if (job->isStream) {
-        StreamResult r;
-        r.error = job->response.error;
-        r.statusCode = job->response.statusCode;
-        r.receivedBytes = job->receivedBytes;
-        if (job->onDone) {
-            job->onDone(r);
-        }
-    } else {
-        JsonDocument result = buildResult(*job, job->response);
-        deliverResult(job, result);
-    }
+	if (job->isStream) {
+		StreamResult r;
+		r.error = job->response.error;
+		r.statusCode = job->response.statusCode;
+		r.receivedBytes = job->receivedBytes;
+		if (job->onDone) {
+			job->onDone(r);
+		}
+	} else {
+		JsonDocument result = buildResult(*job, job->response);
+		deliverResult(job, result);
+	}
 
-    if (_slotSemaphore) {
-        xSemaphoreGive(_slotSemaphore);
-    }
+	if (_slotSemaphore) {
+		xSemaphoreGive(_slotSemaphore);
+	}
 
-    _activeTasks.fetch_sub(1, std::memory_order_acq_rel);
+	_activeTasks.fetch_sub(1, std::memory_order_acq_rel);
 }
 
 JsonDocument ESPFetch::buildResult(const FetchJob &job, const FetchResponse &response) const {
-    JsonDocument doc;
-    auto root = doc.to<JsonObject>();
-    root["url"] = job.url.c_str();
-    root["method"] = job.method == HTTP_METHOD_POST ? "POST" : "GET";
-    const bool httpOk = response.statusCode >= 200 && response.statusCode < 400;
-    root["status"] = response.statusCode;
-    root["ok"] = response.error == ESP_OK && httpOk;
-    root["duration_ms"] = static_cast<int>(response.durationUs / 1000);
-    root["body"] = response.body.c_str();
-    root["body_truncated"] = response.bodyTruncated;
-    root["headers_truncated"] = response.headersTruncated;
+	JsonDocument doc;
+	auto root = doc.to<JsonObject>();
+	root["url"] = job.url.c_str();
+	root["method"] = job.method == HTTP_METHOD_POST ? "POST" : "GET";
+	const bool httpOk = response.statusCode >= 200 && response.statusCode < 400;
+	root["status"] = response.statusCode;
+	root["ok"] = response.error == ESP_OK && httpOk;
+	root["duration_ms"] = static_cast<int>(response.durationUs / 1000);
+	root["body"] = response.body.c_str();
+	root["body_truncated"] = response.bodyTruncated;
+	root["headers_truncated"] = response.headersTruncated;
 
-    auto headersObj = root["headers"].to<JsonObject>();
-    for (const auto &header : response.headers) {
-        headersObj[header.name.c_str()] = header.value.c_str();
-    }
+	auto headersObj = root["headers"].to<JsonObject>();
+	for (const auto &header : response.headers) {
+		headersObj[header.name.c_str()] = header.value.c_str();
+	}
 
-    if (response.error == ESP_OK) {
-        root["error"] = nullptr;
-    } else {
-        auto err = root["error"].to<JsonObject>();
-        err["code"] = static_cast<int>(response.error);
-        err["message"] = esp_err_to_name(response.error);
-    }
-    return doc;
+	if (response.error == ESP_OK) {
+		root["error"] = nullptr;
+	} else {
+		auto err = root["error"].to<JsonObject>();
+		err["code"] = static_cast<int>(response.error);
+		err["message"] = esp_err_to_name(response.error);
+	}
+	return doc;
 }
 
 void ESPFetch::deliverResult(const std::unique_ptr<FetchJob> &job, const JsonDocument &result) {
-    if (!job) {
-        return;
-    }
-    if (job->callback) {
-        job->callback(result);
-    }
-    if (job->syncHandle) {
-        job->syncHandle->doc = result;
-        job->syncHandle->ready = true;
-        if (job->syncHandle->done) {
-            xSemaphoreGive(job->syncHandle->done);
-        }
-    }
+	if (!job) {
+		return;
+	}
+	if (job->callback) {
+		job->callback(result);
+	}
+	if (job->syncHandle) {
+		job->syncHandle->doc = result;
+		job->syncHandle->ready = true;
+		if (job->syncHandle->done) {
+			xSemaphoreGive(job->syncHandle->done);
+		}
+	}
 }
