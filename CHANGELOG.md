@@ -20,6 +20,7 @@ All notable changes to this project will be documented in this file.
 - Normalize malformed `http:/` or `https:/` URLs to `http://`/`https://` to avoid DNS failures with parsed hosts like `:example.com`.
 - Collapse extra slashes (`https:///`) and strip a leading `://:` host typo before handing URLs to esp_http_client.
 - Teardown now requests active workers to abort in-flight operations and waits for worker completion before releasing shared runtime resources.
+- CI now pins PIOArduino Core to `v6.1.19` and installs the ESP32 platform via `pio pkg install`, restoring PlatformIO compatibility with the current `platform-espressif32` package.
 
 ### Notes
 - Streaming requests bypass all body buffering and ArduinoJson processing.
