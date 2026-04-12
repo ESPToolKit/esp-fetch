@@ -184,6 +184,39 @@ int resolveHttpBufferSize(const char *label, size_t requestValue, size_t configV
 	}
 	return static_cast<int>(selected);
 }
+
+template <typename Callback, typename... Args>
+void invokeFetchCallback(const Callback &callback, Args... args) noexcept {
+	if (!callback) {
+		return;
+	}
+
+#if defined(__cpp_exceptions)
+	try {
+		callback(args...);
+	} catch (...) {
+	}
+#else
+	callback(args...);
+#endif
+}
+
+template <typename Callback, typename... Args>
+bool invokeFetchChunkCallback(const Callback &callback, Args... args) noexcept {
+	if (!callback) {
+		return true;
+	}
+
+#if defined(__cpp_exceptions)
+	try {
+		return callback(args...);
+	} catch (...) {
+		return false;
+	}
+#else
+	return callback(args...);
+#endif
+}
 } // namespace
 
 struct ESPFetch::FetchResponse {
@@ -697,7 +730,8 @@ esp_err_t ESPFetch::handleHttpEvent(esp_http_client_event_t *event) {
 				}
 
 				if (toSend > 0 && job->onChunk) {
-					const bool keepGoing = job->onChunk(event->data, toSend);
+					const bool keepGoing =
+					    invokeFetchChunkCallback(job->onChunk, event->data, toSend);
 					if (!keepGoing) {
 						// Caller requested abort; stop the stream and propagate a deterministic
 						// error.
@@ -845,7 +879,7 @@ void ESPFetch::runJob(std::unique_ptr<FetchJob> job) {
 		r.statusCode = job->response.statusCode;
 		r.receivedBytes = job->receivedBytes;
 		if (job->onDone) {
-			job->onDone(r);
+			invokeFetchCallback(job->onDone, r);
 		}
 	} else {
 		JsonDocument result = buildResult(*job, job->response);
@@ -892,7 +926,7 @@ void ESPFetch::deliverResult(const std::unique_ptr<FetchJob> &job, const JsonDoc
 		return;
 	}
 	if (job->callback) {
-		job->callback(result);
+		invokeFetchCallback(job->callback, result);
 	}
 	if (job->syncHandle) {
 		job->syncHandle->doc = result;

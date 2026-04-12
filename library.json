@@ -41,7 +41,8 @@
   ],
   "build": {
     "flags": [
-      "-std=gnu++17"
+      "-std=gnu++17",
+      "-fno-exceptions"
     ]
   }
 }
