@@ -30,6 +30,8 @@ This design allows ESPFetch to handle both typical REST APIs and large binary do
 - Configurable concurrency via counting semaphore
 - Per-request and global limits for body and header sizes
 - Per-request and global ESP-IDF HTTP client RX/TX buffer sizing
+- Bundle-backed HTTPS verification by default for public endpoints
+- Configurable TLS trust sources (`caCertPem`, cert bundle, global CA store, insecure test mode)
 - Optional `FetchConfig::usePSRAMBuffers` to prefer PSRAM-backed ESPFetch-owned buffers via `ESPBufferManager` (JSON response body/headers, request body strings, and copied request headers; safe fallback on non-PSRAM boards)
 - Built on ESP-IDF `esp_http_client` (TLS, redirects, auth, streaming)
 - Detailed result metadata (status, timing, truncation, transport errors)
@@ -55,6 +57,7 @@ void setup() {
     cfg.defaultTimeoutMs = 12000;
     cfg.rxBufferSize = 8192; // optional: esp_http_client RX buffer size (0 = IDF default)
     cfg.txBufferSize = 2048; // optional: esp_http_client TX buffer size (0 = IDF default)
+    cfg.useTlsCertBundle = true; // default: verify HTTPS servers with the ESP certificate bundle
     cfg.usePSRAMBuffers = true; // optional: best-effort PSRAM for ESPFetch-owned request/response buffers
 
     fetch.init(cfg);
@@ -244,6 +247,43 @@ Notes:
 
 ---
 
+## HTTPS Trust Sources
+
+`ESPFetch` now validates `https://` requests with the ESP certificate bundle by default:
+
+```cpp
+FetchConfig cfg;
+cfg.useTlsCertBundle = true; // default
+fetch.init(cfg);
+```
+
+You can select other trust strategies:
+
+```cpp
+FetchConfig cfg;
+cfg.caCertPem = myRootCaPem;      // highest precedence
+cfg.useGlobalCaStore = false;
+cfg.useTlsCertBundle = false;
+fetch.init(cfg);
+```
+
+Per-request overrides are optional:
+
+```cpp
+FetchRequestOptions opts;
+opts.useTlsCertBundle = false;
+opts.useGlobalCaStore = true;
+fetch.get("https://example.com/api", resultCallback, opts);
+```
+
+Rules:
+
+* Precedence is `caCertPem` -> `useGlobalCaStore` -> `useTlsCertBundle` -> `skipTlsServerCertValidation`.
+* `skipTlsServerCertValidation` is for diagnostics only and only works when the build enables `CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY`.
+* `https://` requests without any verification strategy are rejected before `esp_http_client` starts, with a deterministic error message.
+
+---
+
 ## API Reference
 
 ### Initialization
@@ -257,8 +297,13 @@ bool isInitialized() const;
 ```cpp
 struct FetchConfig {
     // ...
+    const char* caCertPem = nullptr;
     size_t rxBufferSize = 0;
     size_t txBufferSize = 0;
+    bool useTlsCertBundle = true;
+    bool useGlobalCaStore = false;
+    bool skipTlsServerCertValidation = false;
+    bool skipTlsCommonNameCheck = false;
 };
 ```
 
@@ -293,8 +338,13 @@ JsonDocument post(const char* url,
 ```cpp
 struct FetchRequestOptions {
     // ...
+    const char* caCertPem = nullptr;
     size_t rxBufferSize = 0;
     size_t txBufferSize = 0;
+    std::optional<bool> useTlsCertBundle;
+    std::optional<bool> useGlobalCaStore;
+    std::optional<bool> skipTlsServerCertValidation;
+    std::optional<bool> skipTlsCommonNameCheck;
 };
 ```
 
@@ -362,9 +412,11 @@ struct StreamResult {
 * Sync APIs still spawn worker tasks internally
 * No cancellation once a request has started
 * Skipping TLS CN checks is unsafe for production
+* `skipTlsServerCertValidation` is unsafe for production and requires `CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY`
 * URLs must be absolute (`http://` or `https://`); malformed schemes like `https:/` or `https:///` are normalized and logged
 * A leading `://:` host typo is normalized (e.g., `https://:example.com` -> `https://example.com`)
 * DNS must be configured before requests (WiFi/ETH); `esp-tls` `getaddrinfo()` failures (e.g., 202) usually mean missing DNS setup
+* `https://` requests now fail fast when no CA PEM, cert bundle, global CA store, or explicit insecure test mode is configured
 * `usePSRAMBuffers` affects ESPFetch-owned request/response string/header buffers; ArduinoJson `JsonDocument` allocations still follow ArduinoJson's own allocator behavior
 
 ---

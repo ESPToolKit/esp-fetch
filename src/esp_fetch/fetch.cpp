@@ -12,6 +12,12 @@ extern "C" {
 #include "esp_timer.h"
 }
 
+#if ESP_FETCH_HAVE_CRT_BUNDLE
+extern "C" {
+#include <esp_crt_bundle.h>
+}
+#endif
+
 namespace {
 constexpr const char *TAG = "ESPFetch";
 
@@ -60,7 +66,11 @@ struct InternalFetchRequestOptions {
 	size_t maxHeaderBytes = 0;
 	size_t rxBufferSize = 0;
 	size_t txBufferSize = 0;
-	bool skipTlsCommonNameCheck = false;
+	const char *caCertPem = nullptr;
+	std::optional<bool> useTlsCertBundle;
+	std::optional<bool> useGlobalCaStore;
+	std::optional<bool> skipTlsServerCertValidation;
+	std::optional<bool> skipTlsCommonNameCheck;
 	bool allowRedirects = true;
 	InternalFetchHeaderVector headers;
 	const char *contentType = nullptr;
@@ -374,17 +384,19 @@ ESPFetch::get(const char *url, TickType_t waitTicks, const FetchRequestOptions &
 		return doc;
 	}
 
+	const char *startError = nullptr;
 	if (!enqueueRequest(
 	        url,
 	        HTTP_METHOD_GET,
 	        FetchString{FetchAllocator<char>(_config.usePSRAMBuffers)},
 	        nullptr,
 	        handle,
-	        options
+	        options,
+	        &startError
 	    )) {
 		JsonDocument doc;
 		doc["ok"] = false;
-		doc["error"]["message"] = "failed to start http get";
+		doc["error"]["message"] = startError ? startError : "failed to start http get";
 		return doc;
 	}
 
@@ -452,10 +464,19 @@ JsonDocument ESPFetch::post(
 		return doc;
 	}
 
-	if (!enqueueRequest(url, HTTP_METHOD_POST, std::move(body), nullptr, handle, options)) {
+	const char *startError = nullptr;
+	if (!enqueueRequest(
+	        url,
+	        HTTP_METHOD_POST,
+	        std::move(body),
+	        nullptr,
+	        handle,
+	        options,
+	        &startError
+	    )) {
 		JsonDocument doc;
 		doc["ok"] = false;
-		doc["error"]["message"] = "failed to start http post";
+		doc["error"]["message"] = startError ? startError : "failed to start http post";
 		return doc;
 	}
 
@@ -501,21 +522,38 @@ bool ESPFetch::enqueueRequest(
     FetchString &&body,
     FetchCallback callback,
     std::shared_ptr<SyncHandle> syncHandle,
-    const FetchRequestOptions &options
+    const FetchRequestOptions &options,
+    const char **startErrorOut
 ) {
 	if (!isInitialized()) {
 		ESP_LOGE(TAG, "ESPFetch not initialized");
+		if (startErrorOut != nullptr) {
+			*startErrorOut = "ESPFetch not initialized";
+		}
+		return false;
+	}
+
+	const std::string normalizedUrl = normalizeUrl(url);
+	const char *tlsError =
+	    esp_fetch_detail::validateFetchTlsOptions(normalizedUrl, _config, options);
+	if (tlsError != nullptr) {
+		ESP_LOGE(TAG, "Rejected request for %s: %s", normalizedUrl.c_str(), tlsError);
+		if (startErrorOut != nullptr) {
+			*startErrorOut = tlsError;
+		}
 		return false;
 	}
 
 	if (xSemaphoreTake(_slotSemaphore, _config.slotAcquireTicks) != pdTRUE) {
 		ESP_LOGW(TAG, "No available fetch slots");
+		if (startErrorOut != nullptr) {
+			*startErrorOut = "no available fetch slots";
+		}
 		return false;
 	}
 
 	auto job = std::make_unique<FetchJob>(_config.usePSRAMBuffers);
 	job->owner = this;
-	const std::string normalizedUrl = normalizeUrl(url);
 	job->url.assign(normalizedUrl.c_str(), normalizedUrl.size());
 	job->method = method;
 	job->body = std::move(body);
@@ -524,6 +562,10 @@ bool ESPFetch::enqueueRequest(
 	job->requestOptions.maxHeaderBytes = options.maxHeaderBytes;
 	job->requestOptions.rxBufferSize = options.rxBufferSize;
 	job->requestOptions.txBufferSize = options.txBufferSize;
+	job->requestOptions.caCertPem = options.caCertPem;
+	job->requestOptions.useTlsCertBundle = options.useTlsCertBundle;
+	job->requestOptions.useGlobalCaStore = options.useGlobalCaStore;
+	job->requestOptions.skipTlsServerCertValidation = options.skipTlsServerCertValidation;
 	job->requestOptions.skipTlsCommonNameCheck = options.skipTlsCommonNameCheck;
 	job->requestOptions.allowRedirects = options.allowRedirects;
 	job->requestOptions.contentType = options.contentType;
@@ -555,6 +597,9 @@ bool ESPFetch::enqueueRequest(
 	size_t stackSize = _config.stackSize;
 	if (stackSize == 0) {
 		ESP_LOGE(TAG, "Invalid stack size for fetch worker");
+		if (startErrorOut != nullptr) {
+			*startErrorOut = "invalid stack size for fetch worker";
+		}
 		xSemaphoreGive(_slotSemaphore);
 		return false;
 	}
@@ -574,6 +619,9 @@ bool ESPFetch::enqueueRequest(
 	);
 	if (created != pdPASS) {
 		ESP_LOGE(TAG, "Failed to spawn fetch task");
+		if (startErrorOut != nullptr) {
+			*startErrorOut = "failed to spawn fetch task";
+		}
 		_activeTasks.fetch_sub(1, std::memory_order_acq_rel);
 		delete jobPtr;
 		xSemaphoreGive(_slotSemaphore);
@@ -586,26 +634,46 @@ bool ESPFetch::enqueueStreamRequest(
     const std::string &url,
     FetchChunkCallback onChunk,
     FetchStreamCallback onDone,
-    const FetchRequestOptions &options
+    const FetchRequestOptions &options,
+    const char **startErrorOut
 ) {
 	if (!isInitialized()) {
 		ESP_LOGE(TAG, "ESPFetch not initialized");
+		if (startErrorOut != nullptr) {
+			*startErrorOut = "ESPFetch not initialized";
+		}
 		return false;
 	}
 
 	if (!onChunk) {
 		ESP_LOGE(TAG, "getStream requires onChunk callback");
+		if (startErrorOut != nullptr) {
+			*startErrorOut = "getStream requires onChunk callback";
+		}
+		return false;
+	}
+
+	const std::string normalizedUrl = normalizeUrl(url);
+	const char *tlsError =
+	    esp_fetch_detail::validateFetchTlsOptions(normalizedUrl, _config, options);
+	if (tlsError != nullptr) {
+		ESP_LOGE(TAG, "Rejected stream request for %s: %s", normalizedUrl.c_str(), tlsError);
+		if (startErrorOut != nullptr) {
+			*startErrorOut = tlsError;
+		}
 		return false;
 	}
 
 	if (xSemaphoreTake(_slotSemaphore, _config.slotAcquireTicks) != pdTRUE) {
 		ESP_LOGW(TAG, "No available fetch slots");
+		if (startErrorOut != nullptr) {
+			*startErrorOut = "no available fetch slots";
+		}
 		return false;
 	}
 
 	auto job = std::make_unique<FetchJob>(_config.usePSRAMBuffers);
 	job->owner = this;
-	const std::string normalizedUrl = normalizeUrl(url);
 	job->url.assign(normalizedUrl.c_str(), normalizedUrl.size());
 	job->method = HTTP_METHOD_GET;
 	job->requestOptions.timeoutMs = options.timeoutMs;
@@ -613,6 +681,10 @@ bool ESPFetch::enqueueStreamRequest(
 	job->requestOptions.maxHeaderBytes = options.maxHeaderBytes;
 	job->requestOptions.rxBufferSize = options.rxBufferSize;
 	job->requestOptions.txBufferSize = options.txBufferSize;
+	job->requestOptions.caCertPem = options.caCertPem;
+	job->requestOptions.useTlsCertBundle = options.useTlsCertBundle;
+	job->requestOptions.useGlobalCaStore = options.useGlobalCaStore;
+	job->requestOptions.skipTlsServerCertValidation = options.skipTlsServerCertValidation;
 	job->requestOptions.skipTlsCommonNameCheck = options.skipTlsCommonNameCheck;
 	job->requestOptions.allowRedirects = options.allowRedirects;
 	job->requestOptions.contentType = options.contentType;
@@ -641,6 +713,9 @@ bool ESPFetch::enqueueStreamRequest(
 	size_t stackSize = _config.stackSize;
 	if (stackSize == 0) {
 		ESP_LOGE(TAG, "Invalid stack size for fetch worker");
+		if (startErrorOut != nullptr) {
+			*startErrorOut = "invalid stack size for fetch worker";
+		}
 		xSemaphoreGive(_slotSemaphore);
 		return false;
 	}
@@ -660,6 +735,9 @@ bool ESPFetch::enqueueStreamRequest(
 	);
 	if (created != pdPASS) {
 		ESP_LOGE(TAG, "Failed to spawn fetch task");
+		if (startErrorOut != nullptr) {
+			*startErrorOut = "failed to spawn fetch task";
+		}
 		_activeTasks.fetch_sub(1, std::memory_order_acq_rel);
 		delete jobPtr;
 		xSemaphoreGive(_slotSemaphore);
@@ -799,6 +877,9 @@ void ESPFetch::runJob(std::unique_ptr<FetchJob> job) {
 	if (_teardownRequested.load(std::memory_order_acquire)) {
 		job->response.error = ESP_ERR_INVALID_STATE;
 	} else {
+		const esp_fetch_detail::ResolvedFetchTlsOptions tlsOptions =
+		    esp_fetch_detail::resolveFetchTlsOptions(_config, job->requestOptions);
+
 		esp_http_client_config_t config = {};
 		config.url = job->url.c_str();
 		config.method = job->method;
@@ -818,8 +899,14 @@ void ESPFetch::runJob(std::unique_ptr<FetchJob> job) {
 		config.user_data = job.get();
 		config.disable_auto_redirect =
 		    !(job->requestOptions.allowRedirects && _config.followRedirects);
-		config.skip_cert_common_name_check =
-		    job->requestOptions.skipTlsCommonNameCheck || _config.skipTlsCommonNameCheck;
+		config.cert_pem = tlsOptions.caCertPem;
+		config.use_global_ca_store = tlsOptions.useGlobalCaStore;
+		config.skip_cert_common_name_check = tlsOptions.skipTlsCommonNameCheck;
+#if ESP_FETCH_HAVE_CRT_BUNDLE
+		if (tlsOptions.useTlsCertBundle) {
+			config.crt_bundle_attach = esp_crt_bundle_attach;
+		}
+#endif
 
 		esp_http_client_handle_t client = esp_http_client_init(&config);
 		if (!client) {

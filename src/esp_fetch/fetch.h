@@ -6,6 +6,7 @@
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -31,7 +32,11 @@ struct FetchRequestOptions {
 	size_t maxHeaderBytes = 0;
 	size_t rxBufferSize = 0;
 	size_t txBufferSize = 0;
-	bool skipTlsCommonNameCheck = false;
+	const char *caCertPem = nullptr;
+	std::optional<bool> useTlsCertBundle;
+	std::optional<bool> useGlobalCaStore;
+	std::optional<bool> skipTlsServerCertValidation;
+	std::optional<bool> skipTlsCommonNameCheck;
 	bool allowRedirects = true;
 	std::vector<FetchHeader> headers;
 	const char *contentType = nullptr;
@@ -48,12 +53,126 @@ struct FetchConfig {
 	size_t rxBufferSize = 0;
 	size_t txBufferSize = 0;
 	TickType_t slotAcquireTicks = pdMS_TO_TICKS(0);
+	const char *caCertPem = nullptr;
+	bool useTlsCertBundle = true;
+	bool useGlobalCaStore = false;
+	bool skipTlsServerCertValidation = false;
 	bool skipTlsCommonNameCheck = false;
 	bool followRedirects = true;
 	bool usePSRAMBuffers = false;
 	const char *userAgent = "ESPFetch/1.0";
 	const char *defaultContentType = "application/json";
 };
+
+#if __has_include(<esp_crt_bundle.h>)
+#define ESP_FETCH_HAVE_CRT_BUNDLE 1
+#else
+#define ESP_FETCH_HAVE_CRT_BUNDLE 0
+#endif
+
+namespace esp_fetch_detail {
+struct ResolvedFetchTlsOptions {
+	const char *caCertPem = nullptr;
+	bool useTlsCertBundle = false;
+	bool useGlobalCaStore = false;
+	bool skipTlsServerCertValidation = false;
+	bool skipTlsCommonNameCheck = false;
+	bool bundleRequested = false;
+	bool globalCaStoreRequested = false;
+	bool skipServerCertValidationRequested = false;
+};
+
+inline bool hasFetchCaCertPem(const char *certPem) {
+	return certPem != nullptr && certPem[0] != '\0';
+}
+
+inline bool resolveFetchTlsBool(const std::optional<bool> &requestValue, bool configValue) {
+	return requestValue.has_value() ? *requestValue : configValue;
+}
+
+inline bool fetchCanSkipServerCertVerification() {
+#if defined(CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY)
+	return true;
+#else
+	return false;
+#endif
+}
+
+inline ResolvedFetchTlsOptions
+resolveFetchTlsOptions(const FetchConfig &config, const FetchRequestOptions &requestOptions) {
+	ResolvedFetchTlsOptions resolved;
+	resolved.skipTlsCommonNameCheck =
+	    resolveFetchTlsBool(requestOptions.skipTlsCommonNameCheck, config.skipTlsCommonNameCheck);
+
+	const char *requestCaCertPem =
+	    hasFetchCaCertPem(requestOptions.caCertPem) ? requestOptions.caCertPem : nullptr;
+	const char *configCaCertPem = hasFetchCaCertPem(config.caCertPem) ? config.caCertPem : nullptr;
+	resolved.caCertPem = requestCaCertPem != nullptr ? requestCaCertPem : configCaCertPem;
+
+	resolved.bundleRequested =
+	    resolveFetchTlsBool(requestOptions.useTlsCertBundle, config.useTlsCertBundle);
+	resolved.globalCaStoreRequested =
+	    resolveFetchTlsBool(requestOptions.useGlobalCaStore, config.useGlobalCaStore);
+	resolved.skipServerCertValidationRequested = resolveFetchTlsBool(
+	    requestOptions.skipTlsServerCertValidation,
+	    config.skipTlsServerCertValidation
+	);
+
+	if (resolved.caCertPem != nullptr) {
+		return resolved;
+	}
+
+	if (resolved.globalCaStoreRequested) {
+		resolved.useGlobalCaStore = true;
+		return resolved;
+	}
+
+#if ESP_FETCH_HAVE_CRT_BUNDLE
+	if (resolved.bundleRequested) {
+		resolved.useTlsCertBundle = true;
+		return resolved;
+	}
+#endif
+
+#if defined(CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY)
+	if (resolved.skipServerCertValidationRequested) {
+		resolved.skipTlsServerCertValidation = true;
+	}
+#endif
+
+	return resolved;
+}
+
+inline bool fetchUrlUsesHttps(const std::string &url) {
+	return url.size() >= 8 && (url[0] == 'h' || url[0] == 'H') && (url[1] == 't' || url[1] == 'T') &&
+	       (url[2] == 't' || url[2] == 'T') && (url[3] == 'p' || url[3] == 'P') &&
+	       (url[4] == 's' || url[4] == 'S') && url[5] == ':' && url[6] == '/' && url[7] == '/';
+}
+
+inline const char *validateFetchTlsOptions(
+    const std::string &url, const FetchConfig &config, const FetchRequestOptions &requestOptions
+) {
+	if (!fetchUrlUsesHttps(url)) {
+		return nullptr;
+	}
+
+	const ResolvedFetchTlsOptions resolved = resolveFetchTlsOptions(config, requestOptions);
+	if (resolved.caCertPem != nullptr || resolved.useGlobalCaStore || resolved.useTlsCertBundle ||
+	    resolved.skipTlsServerCertValidation) {
+		return nullptr;
+	}
+
+	if (resolved.bundleRequested && !ESP_FETCH_HAVE_CRT_BUNDLE) {
+		return "useTlsCertBundle requested but esp_crt_bundle_attach is unavailable in this build";
+	}
+
+	if (resolved.skipServerCertValidationRequested && !fetchCanSkipServerCertVerification()) {
+		return "skipTlsServerCertValidation requires CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY";
+	}
+
+	return "https requests require caCertPem, useTlsCertBundle, useGlobalCaStore, or skipTlsServerCertValidation";
+}
+} // namespace esp_fetch_detail
 
 using FetchCallback = std::function<void(JsonDocument result)>;
 
@@ -145,14 +264,16 @@ class ESPFetch {
 	    FetchString &&body,
 	    FetchCallback callback,
 	    std::shared_ptr<SyncHandle> syncHandle,
-	    const FetchRequestOptions &options
+	    const FetchRequestOptions &options,
+	    const char **startErrorOut = nullptr
 	);
 
 	bool enqueueStreamRequest(
 	    const std::string &url,
 	    FetchChunkCallback onChunk,
 	    FetchStreamCallback onDone,
-	    const FetchRequestOptions &options
+	    const FetchRequestOptions &options,
+	    const char **startErrorOut = nullptr
 	);
 
 	JsonDocument
