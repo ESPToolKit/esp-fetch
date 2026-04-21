@@ -877,8 +877,15 @@ void ESPFetch::runJob(std::unique_ptr<FetchJob> job) {
 	if (_teardownRequested.load(std::memory_order_acquire)) {
 		job->response.error = ESP_ERR_INVALID_STATE;
 	} else {
+		FetchRequestOptions requestTlsOptions;
+		requestTlsOptions.caCertPem = job->requestOptions.caCertPem;
+		requestTlsOptions.useTlsCertBundle = job->requestOptions.useTlsCertBundle;
+		requestTlsOptions.useGlobalCaStore = job->requestOptions.useGlobalCaStore;
+		requestTlsOptions.skipTlsServerCertValidation =
+		    job->requestOptions.skipTlsServerCertValidation;
+		requestTlsOptions.skipTlsCommonNameCheck = job->requestOptions.skipTlsCommonNameCheck;
 		const esp_fetch_detail::ResolvedFetchTlsOptions tlsOptions =
-		    esp_fetch_detail::resolveFetchTlsOptions(_config, job->requestOptions);
+		    esp_fetch_detail::resolveFetchTlsOptions(_config, requestTlsOptions);
 
 		esp_http_client_config_t config = {};
 		config.url = job->url.c_str();
