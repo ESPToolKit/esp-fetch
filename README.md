@@ -32,7 +32,7 @@ This design allows ESPFetch to handle both typical REST APIs and large binary do
 - Per-request and global ESP-IDF HTTP client RX/TX buffer sizing
 - Bundle-backed HTTPS verification by default for public endpoints
 - Configurable TLS trust sources (`caCertPem`, cert bundle, global CA store, insecure test mode)
-- Optional `FetchConfig::usePSRAMBuffers` to prefer PSRAM-backed ESPFetch-owned buffers via `ESPBufferManager` (JSON response body/headers, request body strings, and copied request headers; safe fallback on non-PSRAM boards)
+- Optional `FetchConfig::usePSRAMBuffers` to prefer PSRAM-backed ESPFetch-owned buffers via `ESPBufferManager` when that library is installed in the consuming project (otherwise ESPFetch falls back to normal heap allocation with no API change)
 - Built on ESP-IDF `esp_http_client` (TLS, redirects, auth, streaming)
 - Detailed result metadata (status, timing, truncation, transport errors)
 - ArduinoJson v7 only (no Dynamic/Static split)
@@ -81,6 +81,12 @@ if (fetch.isInitialized()) {
     fetch.deinit();
 }
 ```
+
+## Optional PSRAM Buffers
+
+`FetchConfig::usePSRAMBuffers` is opportunistic.
+
+If the consuming project also installs `ESPBufferManager`, ESPFetch uses it for ESPFetch-owned request/response buffers. If that header is not available, ESPFetch keeps the same API and behavior but falls back to normal heap allocation.
 
 ---
 
@@ -418,6 +424,7 @@ struct StreamResult {
 * DNS must be configured before requests (WiFi/ETH); `esp-tls` `getaddrinfo()` failures (e.g., 202) usually mean missing DNS setup
 * `https://` requests now fail fast when no CA PEM, cert bundle, global CA store, or explicit insecure test mode is configured
 * `usePSRAMBuffers` affects ESPFetch-owned request/response string/header buffers; ArduinoJson `JsonDocument` allocations still follow ArduinoJson's own allocator behavior
+* Installing `ESPBufferManager` is optional and only needed when you want PSRAM-backed ESPFetch-owned buffers
 
 ---
 
@@ -426,6 +433,7 @@ struct StreamResult {
 * ESP32 + FreeRTOS only (Arduino-ESP32 or ESP-IDF)
 * Requires C++17 (`-std=gnu++17`)
 * Depends on `esp_http_client`, `esp_timer`, ArduinoJson v7
+* `ESPBufferManager` is an optional integration for PSRAM-backed ESPFetch-owned buffers
 
 ---
 

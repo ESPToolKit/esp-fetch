@@ -1,3 +1,4 @@
+.pio/
 .venv
 build/
 build_prev_runner/
