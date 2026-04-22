@@ -4,6 +4,7 @@
 #include <ArduinoJson.h>
 
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -179,12 +180,19 @@ using FetchCallback = std::function<void(JsonDocument result)>;
 // ------------------------------
 // Streaming (binary/any-content)
 // ------------------------------
+struct StreamStartInfo {
+	int statusCode = 0;
+	int64_t contentLength = -1;
+	bool isChunked = false;
+};
+
 struct StreamResult {
 	esp_err_t error = ESP_OK;
 	int statusCode = 0;
 	size_t receivedBytes = 0;
 };
 
+using FetchStreamStartCallback = std::function<bool(const StreamStartInfo &info)>;
 using FetchChunkCallback = std::function<bool(const void *data, size_t size)>;
 using FetchStreamCallback = std::function<void(StreamResult result)>;
 
@@ -247,7 +255,21 @@ class ESPFetch {
 	    const FetchRequestOptions &options = FetchRequestOptions{}
 	);
 	bool getStream(
+	    const char *url,
+	    FetchStreamStartCallback onStart,
+	    FetchChunkCallback onChunk,
+	    FetchStreamCallback onDone = nullptr,
+	    const FetchRequestOptions &options = FetchRequestOptions{}
+	);
+	bool getStream(
 	    const String &url,
+	    FetchChunkCallback onChunk,
+	    FetchStreamCallback onDone = nullptr,
+	    const FetchRequestOptions &options = FetchRequestOptions{}
+	);
+	bool getStream(
+	    const String &url,
+	    FetchStreamStartCallback onStart,
 	    FetchChunkCallback onChunk,
 	    FetchStreamCallback onDone = nullptr,
 	    const FetchRequestOptions &options = FetchRequestOptions{}
@@ -270,6 +292,7 @@ class ESPFetch {
 
 	bool enqueueStreamRequest(
 	    const std::string &url,
+	    FetchStreamStartCallback onStart,
 	    FetchChunkCallback onChunk,
 	    FetchStreamCallback onDone,
 	    const FetchRequestOptions &options,

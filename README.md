@@ -201,6 +201,44 @@ if (!started) {
 }
 ```
 
+### Status-Gated Streaming Example
+
+Use the status-aware overload when you must reject non-`2xx` responses before
+processing any body bytes, for example during OTA or direct-to-flash writes.
+
+```cpp
+const char* exampleURL = "https://example.com/firmware.bin";
+
+bool handleStart(const StreamStartInfo& info){
+    if (info.statusCode < 200 || info.statusCode >= 300) {
+        ESP_LOGW("FETCH", "Rejecting response with HTTP %d", info.statusCode);
+        return false;
+    }
+    return true;
+}
+
+bool handleChunk(const void* data, size_t size){
+    return true;
+}
+
+void handleDone(StreamResult result){
+    ESP_LOGI("FETCH", "Finished: status=%d error=%s bytes=%u",
+        result.statusCode,
+        esp_err_to_name(result.error),
+        result.receivedBytes
+    );
+}
+
+fetch.getStream(exampleURL, handleStart, handleChunk, handleDone);
+```
+
+If `handleStart(...)` returns `false`:
+
+* no chunk callback is invoked
+* `StreamResult.error == ESP_OK`
+* `StreamResult.statusCode` contains the resolved HTTP status
+* `StreamResult.receivedBytes == 0`
+
 ---
 
 ### Streaming Size Limits
@@ -370,11 +408,33 @@ bool getStream(const String& url,
     FetchStreamCallback onDone = nullptr,
     const FetchRequestOptions& opts = {}
 );
+
+bool getStream(const char* url,
+    FetchStreamStartCallback onStart,
+    FetchChunkCallback onChunk,
+    FetchStreamCallback onDone = nullptr,
+    const FetchRequestOptions& opts = {}
+);
+
+bool getStream(const String& url,
+    FetchStreamStartCallback onStart,
+    FetchChunkCallback onChunk,
+    FetchStreamCallback onDone = nullptr,
+    const FetchRequestOptions& opts = {}
+);
 ```
 
 #### Callbacks
 
 ```cpp
+struct StreamStartInfo {
+    int statusCode;
+    int64_t contentLength;
+    bool isChunked;
+};
+
+using FetchStreamStartCallback = std::function<bool(const StreamStartInfo& info)>;
+
 using FetchChunkCallback = std::function<bool(const void* data, size_t size)>;
 
 using FetchStreamCallback = std::function<void(StreamResult result)>;
@@ -385,6 +445,10 @@ struct StreamResult {
     size_t receivedBytes;
 };
 ```
+
+Use `FetchStreamStartCallback` when the caller needs to validate HTTP status
+before processing any response body bytes. Legacy `getStream(...)` overloads
+without `onStart` remain available for existing callers.
 
 ---
 

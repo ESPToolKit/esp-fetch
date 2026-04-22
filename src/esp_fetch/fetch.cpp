@@ -227,6 +227,42 @@ bool invokeFetchChunkCallback(const Callback &callback, Args... args) noexcept {
 	return callback(args...);
 #endif
 }
+
+template <typename Callback, typename... Args>
+bool invokeFetchStartCallback(const Callback &callback, Args... args) noexcept {
+	if (!callback) {
+		return true;
+	}
+
+#if defined(__cpp_exceptions)
+	try {
+		return callback(args...);
+	} catch (...) {
+		return false;
+	}
+#else
+	return callback(args...);
+#endif
+}
+
+constexpr size_t STREAM_READ_BUFFER_SIZE_FALLBACK_BYTES = 1024;
+
+bool isRedirectHttpStatus(int statusCode) {
+	return statusCode == 301 || statusCode == 302 || statusCode == 303 || statusCode == 307 ||
+	       statusCode == 308;
+}
+
+esp_err_t mapStreamReadFailure(esp_http_client_handle_t client, int readResult) {
+	if (readResult == -ESP_ERR_HTTP_EAGAIN) {
+		return ESP_ERR_HTTP_READ_TIMEOUT;
+	}
+
+	if (esp_http_client_get_errno(client) == ENOTCONN) {
+		return ESP_ERR_HTTP_CONNECTION_CLOSED;
+	}
+
+	return ESP_ERR_HTTP_INCOMPLETE_DATA;
+}
 } // namespace
 
 struct ESPFetch::FetchResponse {
@@ -286,10 +322,12 @@ struct ESPFetch::FetchJob {
 
 	// Stream mode (new APIs)
 	bool isStream = false;
+	FetchStreamStartCallback onStart;
 	FetchChunkCallback onChunk;
 	FetchStreamCallback onDone;
 	size_t receivedBytes = 0;
 	esp_err_t streamAbortError = ESP_OK;
+	bool streamStartRejected = false;
 };
 
 ESPFetch::~ESPFetch() {
@@ -504,7 +542,26 @@ bool ESPFetch::getStream(
 	if (!url || !onChunk) {
 		return false;
 	}
-	return enqueueStreamRequest(url, std::move(onChunk), std::move(onDone), options);
+	return enqueueStreamRequest(url, nullptr, std::move(onChunk), std::move(onDone), options);
+}
+
+bool ESPFetch::getStream(
+    const char *url,
+    FetchStreamStartCallback onStart,
+    FetchChunkCallback onChunk,
+    FetchStreamCallback onDone,
+    const FetchRequestOptions &options
+) {
+	if (!url || !onChunk) {
+		return false;
+	}
+	return enqueueStreamRequest(
+	    url,
+	    std::move(onStart),
+	    std::move(onChunk),
+	    std::move(onDone),
+	    options
+	);
 }
 
 bool ESPFetch::getStream(
@@ -514,6 +571,22 @@ bool ESPFetch::getStream(
     const FetchRequestOptions &options
 ) {
 	return getStream(url.c_str(), std::move(onChunk), std::move(onDone), options);
+}
+
+bool ESPFetch::getStream(
+    const String &url,
+    FetchStreamStartCallback onStart,
+    FetchChunkCallback onChunk,
+    FetchStreamCallback onDone,
+    const FetchRequestOptions &options
+) {
+	return getStream(
+	    url.c_str(),
+	    std::move(onStart),
+	    std::move(onChunk),
+	    std::move(onDone),
+	    options
+	);
 }
 
 bool ESPFetch::enqueueRequest(
@@ -632,6 +705,7 @@ bool ESPFetch::enqueueRequest(
 
 bool ESPFetch::enqueueStreamRequest(
     const std::string &url,
+    FetchStreamStartCallback onStart,
     FetchChunkCallback onChunk,
     FetchStreamCallback onDone,
     const FetchRequestOptions &options,
@@ -696,10 +770,12 @@ bool ESPFetch::enqueueStreamRequest(
 	}
 
 	job->isStream = true;
+	job->onStart = std::move(onStart);
 	job->onChunk = std::move(onChunk);
 	job->onDone = std::move(onDone);
 	job->receivedBytes = 0;
 	job->streamAbortError = ESP_OK;
+	job->streamStartRejected = false;
 
 	// For streaming, default to "unlimited" unless the caller explicitly sets maxBodyBytes.
 	job->bodyLimit = job->requestOptions.maxBodyBytes ? job->requestOptions.maxBodyBytes
@@ -796,36 +872,7 @@ esp_err_t ESPFetch::handleHttpEvent(esp_http_client_event_t *event) {
 		if (event->data && event->data_len > 0) {
 			// Stream mode: do NOT buffer body; forward chunks directly.
 			if (job->isStream) {
-				size_t toSend = static_cast<size_t>(event->data_len);
-
-				if (job->bodyLimit != std::numeric_limits<size_t>::max()) {
-					if (job->receivedBytes >= job->bodyLimit) {
-						job->streamAbortError = ESP_ERR_INVALID_SIZE;
-						return ESP_FAIL;
-					}
-					const size_t remaining = job->bodyLimit - job->receivedBytes;
-					toSend = std::min(toSend, remaining);
-				}
-
-				if (toSend > 0 && job->onChunk) {
-					const bool keepGoing =
-					    invokeFetchChunkCallback(job->onChunk, event->data, toSend);
-					if (!keepGoing) {
-						// Caller requested abort; stop the stream and propagate a deterministic
-						// error.
-						if (job->streamAbortError == ESP_OK) {
-							job->streamAbortError = ESP_ERR_INVALID_STATE;
-						}
-						return ESP_FAIL;
-					}
-					job->receivedBytes += toSend;
-				}
-
-				// If we had to clip the chunk, we've hit the limit and abort.
-				if (toSend < static_cast<size_t>(event->data_len)) {
-					job->streamAbortError = ESP_ERR_INVALID_SIZE;
-					return ESP_FAIL;
-				}
+				break;
 			} else {
 				// JSON mode (existing): buffer into response.body with limit/truncation.
 				size_t available = job->response.body.size() < job->bodyLimit
@@ -952,14 +999,134 @@ void ESPFetch::runJob(std::unique_ptr<FetchJob> job) {
 				esp_http_client_set_post_field(client, job->body.c_str(), job->body.length());
 			}
 
-			job->response.error = esp_http_client_perform(client);
-			if (job->response.error == ESP_OK) {
-				job->response.statusCode = esp_http_client_get_status_code(client);
+			if (!job->isStream) {
+				job->response.error = esp_http_client_perform(client);
+				if (job->response.error == ESP_OK) {
+					job->response.statusCode = esp_http_client_get_status_code(client);
+				}
+			} else {
+				const int configuredReadBufferSize = resolveHttpBufferSize(
+				    "Stream read buffer size",
+				    job->requestOptions.rxBufferSize,
+				    _config.rxBufferSize
+				);
+				const size_t readBufferSize = configuredReadBufferSize > 0
+				                                  ? static_cast<size_t>(configuredReadBufferSize)
+				                                  : STREAM_READ_BUFFER_SIZE_FALLBACK_BYTES;
+				std::vector<char> readBuffer(readBufferSize);
+				bool retryRequest = false;
+				do {
+					retryRequest = false;
+					job->response.error = esp_http_client_open(client, 0);
+					if (job->response.error != ESP_OK) {
+						break;
+					}
+
+					job->response.statusCode = 0;
+					job->response.headers.clear();
+					job->response.headersTruncated = false;
+
+					const int64_t fetchHeadersResult = esp_http_client_fetch_headers(client);
+					if (fetchHeadersResult < 0) {
+						job->response.error = fetchHeadersResult == -ESP_ERR_HTTP_EAGAIN
+						                          ? ESP_ERR_HTTP_READ_TIMEOUT
+						                          : ESP_ERR_HTTP_FETCH_HEADER;
+						esp_http_client_close(client);
+						break;
+					}
+
+					job->response.statusCode = esp_http_client_get_status_code(client);
+					const StreamStartInfo startInfo{
+					    .statusCode = job->response.statusCode,
+					    .contentLength = esp_http_client_get_content_length(client),
+					    .isChunked = esp_http_client_is_chunked_response(client),
+					};
+
+					if (!job->requestOptions.allowRedirects || !_config.followRedirects) {
+						// Keep the response exactly as received.
+					} else if (isRedirectHttpStatus(startInfo.statusCode)) {
+						int discardedLength = 0;
+						(void)esp_http_client_flush_response(client, &discardedLength);
+						job->response.error = esp_http_client_set_redirection(client);
+						esp_http_client_close(client);
+						if (job->response.error == ESP_OK) {
+							retryRequest = true;
+						}
+						continue;
+					} else if (startInfo.statusCode == 401) {
+						job->response.error = esp_http_client_add_auth(client);
+						if (job->response.error != ESP_OK) {
+							esp_http_client_close(client);
+							break;
+						}
+						int discardedLength = 0;
+						job->response.error = esp_http_client_flush_response(client, &discardedLength);
+						esp_http_client_close(client);
+						if (job->response.error == ESP_OK) {
+							retryRequest = true;
+						}
+						continue;
+					}
+
+					if (job->onStart && !invokeFetchStartCallback(job->onStart, startInfo)) {
+						job->streamStartRejected = true;
+						job->response.error = ESP_OK;
+						esp_http_client_close(client);
+						break;
+					}
+
+					while (job->response.error == ESP_OK) {
+						const int readResult = esp_http_client_read(
+						    client,
+						    readBuffer.data(),
+						    static_cast<int>(readBuffer.size())
+						);
+						if (readResult < 0) {
+							job->response.error = mapStreamReadFailure(client, readResult);
+							break;
+						}
+						if (readResult == 0) {
+							if (!esp_http_client_is_complete_data_received(client)) {
+								job->response.error = mapStreamReadFailure(client, readResult);
+							}
+							break;
+						}
+
+						size_t toSend = static_cast<size_t>(readResult);
+						if (job->bodyLimit != std::numeric_limits<size_t>::max()) {
+							if (job->receivedBytes >= job->bodyLimit) {
+								job->streamAbortError = ESP_ERR_INVALID_SIZE;
+								job->response.error = job->streamAbortError;
+								break;
+							}
+							const size_t remaining = job->bodyLimit - job->receivedBytes;
+							toSend = std::min(toSend, remaining);
+						}
+
+						if (toSend > 0 && job->onChunk &&
+						    !invokeFetchChunkCallback(job->onChunk, readBuffer.data(), toSend)) {
+							job->streamAbortError = ESP_ERR_INVALID_STATE;
+							job->response.error = job->streamAbortError;
+							break;
+						}
+
+						job->receivedBytes += toSend;
+						if (toSend < static_cast<size_t>(readResult)) {
+							job->streamAbortError = ESP_ERR_INVALID_SIZE;
+							job->response.error = job->streamAbortError;
+							break;
+						}
+					}
+
+					esp_http_client_close(client);
+				} while (retryRequest && job->response.error == ESP_OK);
 			}
-			// Preserve intentional stream abort reason (onChunk returned false or maxBodyBytes
-			// clipping), instead of losing it to generic ESP_FAIL from esp_http_client_perform().
+
 			if (job->isStream && job->response.error != ESP_OK && job->streamAbortError != ESP_OK) {
 				job->response.error = job->streamAbortError;
+			}
+			if (job->isStream && job->streamStartRejected) {
+				job->response.error = ESP_OK;
 			}
 			esp_http_client_cleanup(client);
 		}

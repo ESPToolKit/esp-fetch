@@ -81,6 +81,41 @@ static void test_buffer_size_options_are_assignable() {
 	TEST_ASSERT_TRUE(*opts.skipTlsCommonNameCheck);
 }
 
+static void test_stream_start_info_defaults_are_safe() {
+	StreamStartInfo info{};
+
+	TEST_ASSERT_EQUAL(0, info.statusCode);
+	TEST_ASSERT_EQUAL_INT64(-1, info.contentLength);
+	TEST_ASSERT_FALSE(info.isChunked);
+}
+
+static void test_get_stream_with_start_requires_initialization() {
+	ESPFetch fetch;
+	volatile bool startInvoked = false;
+	volatile bool chunkInvoked = false;
+	auto onStart = [&](const StreamStartInfo &) {
+		startInvoked = true;
+		return true;
+	};
+	auto onChunk = [&](const void *, size_t) {
+		chunkInvoked = true;
+		return true;
+	};
+
+	bool started = fetch.getStream("https://example.com/data.bin", onStart, onChunk);
+
+	TEST_ASSERT_FALSE(started);
+	TEST_ASSERT_FALSE(startInvoked);
+	TEST_ASSERT_FALSE(chunkInvoked);
+}
+
+static void test_get_stream_with_start_requires_chunk_callback() {
+	ESPFetch fetch;
+	auto onStart = [](const StreamStartInfo &) { return true; };
+
+	TEST_ASSERT_FALSE(fetch.getStream("https://example.com/data.bin", onStart, nullptr));
+}
+
 static void test_default_https_tls_resolution_uses_cert_bundle() {
 	FetchConfig cfg{};
 	FetchRequestOptions opts{};
@@ -274,6 +309,7 @@ void setup() {
 	RUN_TEST(test_init_accepts_psram_buffer_toggle);
 	RUN_TEST(test_buffer_size_options_default_to_idf_defaults);
 	RUN_TEST(test_buffer_size_options_are_assignable);
+	RUN_TEST(test_stream_start_info_defaults_are_safe);
 	RUN_TEST(test_default_https_tls_resolution_uses_cert_bundle);
 	RUN_TEST(test_request_ca_cert_overrides_bundle_and_global_store);
 	RUN_TEST(test_request_global_store_override_disables_default_bundle);
@@ -283,6 +319,8 @@ void setup() {
 	RUN_TEST(test_deinit_is_idempotent);
 	RUN_TEST(test_reinit_after_deinit_is_supported);
 	RUN_TEST(test_async_get_requires_initialization);
+	RUN_TEST(test_get_stream_with_start_requires_initialization);
+	RUN_TEST(test_get_stream_with_start_requires_chunk_callback);
 	RUN_TEST(test_sync_get_reports_error_when_not_initialized);
 	RUN_TEST(test_sync_get_reports_tls_preflight_error_before_network_io);
 	RUN_TEST(test_sync_get_requires_url);

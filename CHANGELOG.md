@@ -8,6 +8,9 @@ All notable changes to this project will be documented in this file.
 - Streaming download API via `getStream()` for binary or arbitrary content (no JSON handling).
 - Chunk-based delivery using `FetchChunkCallback` to process large payloads incrementally (files, firmware, blobs).
 - Completion callback with `StreamResult` containing transport error, HTTP status code, and total received byte count.
+- Status-gated streaming overloads with `FetchStreamStartCallback` and
+  `StreamStartInfo` so callers can reject non-`2xx` responses before any body
+  chunk is processed.
 - Per-request streaming size limits via `FetchRequestOptions::maxBodyBytes` (default: unlimited for streams).
 - Added global (`FetchConfig`) and per-request (`FetchRequestOptions`) TX/RX HTTP client buffer sizing controls.
 - Added explicit HTTPS trust-source configuration to `FetchConfig` and per-request TLS overrides to `FetchRequestOptions` (`caCertPem`, `useTlsCertBundle`, `useGlobalCaStore`, `skipTlsServerCertValidation`, `skipTlsCommonNameCheck`).
@@ -18,6 +21,9 @@ All notable changes to this project will be documented in this file.
 - Added `isInitialized()` as the public runtime-state contract accessor.
 
 ### Fixed
+- Stream requests can now resolve HTTP status, content length, and chunked mode
+  before chunk delivery when callers use the new status-aware overload, which
+  prevents OTA/file consumers from processing HTML or error bodies as payload.
 - Normalize malformed `http:/` or `https:/` URLs to `http://`/`https://` to avoid DNS failures with parsed hosts like `:example.com`.
 - Collapse extra slashes (`https:///`) and strip a leading `://:` host typo before handing URLs to esp_http_client.
 - HTTPS requests now default to ESP certificate-bundle verification, matching the expected mixed Arduino + ESP-IDF transport behavior for public endpoints.
