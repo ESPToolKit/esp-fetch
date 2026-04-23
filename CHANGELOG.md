@@ -14,8 +14,9 @@ All notable changes to this project will be documented in this file.
 - Per-request streaming size limits via `FetchRequestOptions::maxBodyBytes` (default: unlimited for streams).
 - Added global (`FetchConfig`) and per-request (`FetchRequestOptions`) TX/RX HTTP client buffer sizing controls.
 - Added explicit HTTPS trust-source configuration to `FetchConfig` and per-request TLS overrides to `FetchRequestOptions` (`caCertPem`, `useTlsCertBundle`, `useGlobalCaStore`, `skipTlsServerCertValidation`, `skipTlsCommonNameCheck`).
+- Added explicit TLS transport controls for TLS version selection and TLS dynamic-buffer strategy on both `FetchConfig` and `FetchRequestOptions`.
 - Hooks for retries/backoff strategies on top of the existing async API.
-- Added `FetchConfig::usePSRAMBuffers` and routed JSON-mode response body/header storage plus request-body/copied-request-header storage through `ESPBufferManager` with automatic fallback to normal heap paths.
+- Added `FetchConfig::usePSRAMBuffers` and per-request `FetchRequestOptions::usePSRAMBuffers`, routing JSON-mode response body/header storage, request-body/copied-request-header storage, and the streaming read buffer through the resolved ESPFetch buffer-placement policy.
 - Switched request task creation/lifecycle to native FreeRTOS `xTaskCreatePinnedToCore(...)` handling.
 - Added explicit teardown-contract lifecycle coverage (`deinit()` pre-init, repeated `deinit()`, and `init -> deinit -> init`).
 - Added `isInitialized()` as the public runtime-state contract accessor.
@@ -28,6 +29,8 @@ All notable changes to this project will be documented in this file.
 - Collapse extra slashes (`https:///`) and strip a leading `://:` host typo before handing URLs to esp_http_client.
 - HTTPS requests now default to ESP certificate-bundle verification, matching the expected mixed Arduino + ESP-IDF transport behavior for public endpoints.
 - HTTPS requests now reject missing/unsupported trust-source configurations before `esp_http_client` starts, replacing opaque `esp-tls` setup failures with deterministic errors.
+- Requests now resolve transport policy once at startup, and unsupported `RxStaticAfterHandshake` selections reject before network I/O when `CONFIG_MBEDTLS_DYNAMIC_BUFFER` is unavailable.
+- Streaming requests now log the resolved TLS version, TLS dynamic-buffer strategy, RX/TX sizes, and fetch-owned buffer placement once before body reads begin.
 - Teardown now requests active workers to abort in-flight operations and waits for worker completion before releasing shared runtime resources.
 - CI now pins PIOArduino Core to `v6.1.19` and installs the ESP32 platform via `pio pkg install`, restoring PlatformIO compatibility with the current `platform-espressif32` package.
 
@@ -41,6 +44,7 @@ All notable changes to this project will be documented in this file.
 - Clarified that stream chunk callbacks return `bool` to continue or abort.
 - Documented that DNS must be configured before starting requests; `getaddrinfo()` failures indicate missing DNS.
 - Documented bundle-backed HTTPS defaults, trust-source precedence, and the `skipTlsServerCertValidation` diagnostic-only contract.
+- Documented TLS version / TLS dynamic-buffer controls, per-request buffer-placement overrides, and the `CONFIG_MBEDTLS_DYNAMIC_BUFFER` requirement for `RxStaticAfterHandshake`.
 - Flesh out troubleshooting tips for TLS and large bodies.
 
 

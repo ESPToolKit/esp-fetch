@@ -30,9 +30,10 @@ This design allows ESPFetch to handle both typical REST APIs and large binary do
 - Configurable concurrency via counting semaphore
 - Per-request and global limits for body and header sizes
 - Per-request and global ESP-IDF HTTP client RX/TX buffer sizing
+- Per-request and global TLS version / TLS dynamic-buffer transport controls
 - Bundle-backed HTTPS verification by default for public endpoints
 - Configurable TLS trust sources (`caCertPem`, cert bundle, global CA store, insecure test mode)
-- Optional `FetchConfig::usePSRAMBuffers` to prefer PSRAM-backed ESPFetch-owned buffers via `ESPBufferManager` when that library is installed in the consuming project (otherwise ESPFetch falls back to normal heap allocation with no API change)
+- Global and per-request ESPFetch-owned buffer placement controls, including the streaming read buffer
 - Built on ESP-IDF `esp_http_client` (TLS, redirects, auth, streaming)
 - Detailed result metadata (status, timing, truncation, transport errors)
 - ArduinoJson v7 only (no Dynamic/Static split)
@@ -57,6 +58,8 @@ void setup() {
     cfg.defaultTimeoutMs = 12000;
     cfg.rxBufferSize = 8192; // optional: esp_http_client RX buffer size (0 = IDF default)
     cfg.txBufferSize = 2048; // optional: esp_http_client TX buffer size (0 = IDF default)
+    cfg.tlsVersion = FetchTlsVersion::Any; // optional: Any, Tls12, Tls13
+    cfg.tlsDynBufferStrategy = FetchTlsDynBufferStrategy::Default; // optional: Default or RxStaticAfterHandshake
     cfg.useTlsCertBundle = true; // default: verify HTTPS servers with the ESP certificate bundle
     cfg.usePSRAMBuffers = true; // optional: best-effort PSRAM for ESPFetch-owned request/response buffers
 
@@ -87,6 +90,8 @@ if (fetch.isInitialized()) {
 `FetchConfig::usePSRAMBuffers` is opportunistic.
 
 If the consuming project also installs `ESPBufferManager`, ESPFetch uses it for ESPFetch-owned request/response buffers. If that header is not available, ESPFetch keeps the same API and behavior but falls back to normal heap allocation.
+
+Per-request overrides are also available through `FetchRequestOptions::usePSRAMBuffers`. The resolved policy affects ESPFetch-owned request/response buffers and the stream read buffer used by `getStream()`.
 
 ---
 
@@ -291,6 +296,37 @@ Notes:
 
 ---
 
+## TLS Transport Controls
+
+ESPFetch exposes ESP-IDF TLS protocol selection and TLS dynamic-buffer policy.
+
+Set defaults at init time:
+
+```cpp
+FetchConfig cfg;
+cfg.tlsVersion = FetchTlsVersion::Tls12;
+cfg.tlsDynBufferStrategy = FetchTlsDynBufferStrategy::Default;
+fetch.init(cfg);
+```
+
+Override per request:
+
+```cpp
+FetchRequestOptions opts;
+opts.tlsVersion = FetchTlsVersion::Tls13;
+opts.tlsDynBufferStrategy = FetchTlsDynBufferStrategy::RxStaticAfterHandshake;
+fetch.getStream("https://example.com/file.bin", onChunk, onDone, opts);
+```
+
+Notes:
+
+* Per-request values override `FetchConfig` defaults.
+* `FetchTlsVersion::Any` keeps ESP-IDF automatic TLS version selection.
+* `FetchTlsDynBufferStrategy::Default` leaves ESP-IDF dynamic TLS buffer behavior unchanged.
+* `FetchTlsDynBufferStrategy::RxStaticAfterHandshake` requires `CONFIG_MBEDTLS_DYNAMIC_BUFFER`; otherwise the request is rejected before `esp_http_client` starts.
+
+---
+
 ## HTTPS Trust Sources
 
 `ESPFetch` now validates `https://` requests with the ESP certificate bundle by default:
@@ -322,6 +358,7 @@ fetch.get("https://example.com/api", resultCallback, opts);
 
 Rules:
 
+* Transport overrides resolve independently from trust-source selection: request override -> `FetchConfig` default.
 * Precedence is `caCertPem` -> `useGlobalCaStore` -> `useTlsCertBundle` -> `skipTlsServerCertValidation`.
 * `skipTlsServerCertValidation` is for diagnostics only and only works when the build enables `CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY`.
 * `https://` requests without any verification strategy are rejected before `esp_http_client` starts, with a deterministic error message.
@@ -344,10 +381,13 @@ struct FetchConfig {
     const char* caCertPem = nullptr;
     size_t rxBufferSize = 0;
     size_t txBufferSize = 0;
+    FetchTlsVersion tlsVersion = FetchTlsVersion::Any;
+    FetchTlsDynBufferStrategy tlsDynBufferStrategy = FetchTlsDynBufferStrategy::Default;
     bool useTlsCertBundle = true;
     bool useGlobalCaStore = false;
     bool skipTlsServerCertValidation = false;
     bool skipTlsCommonNameCheck = false;
+    bool usePSRAMBuffers = false;
 };
 ```
 
@@ -385,6 +425,9 @@ struct FetchRequestOptions {
     const char* caCertPem = nullptr;
     size_t rxBufferSize = 0;
     size_t txBufferSize = 0;
+    std::optional<FetchTlsVersion> tlsVersion;
+    std::optional<FetchTlsDynBufferStrategy> tlsDynBufferStrategy;
+    std::optional<bool> usePSRAMBuffers;
     std::optional<bool> useTlsCertBundle;
     std::optional<bool> useGlobalCaStore;
     std::optional<bool> skipTlsServerCertValidation;
@@ -483,11 +526,12 @@ without `onStart` remain available for existing callers.
 * No cancellation once a request has started
 * Skipping TLS CN checks is unsafe for production
 * `skipTlsServerCertValidation` is unsafe for production and requires `CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY`
+* `FetchTlsDynBufferStrategy::RxStaticAfterHandshake` requires `CONFIG_MBEDTLS_DYNAMIC_BUFFER`
 * URLs must be absolute (`http://` or `https://`); malformed schemes like `https:/` or `https:///` are normalized and logged
 * A leading `://:` host typo is normalized (e.g., `https://:example.com` -> `https://example.com`)
 * DNS must be configured before requests (WiFi/ETH); `esp-tls` `getaddrinfo()` failures (e.g., 202) usually mean missing DNS setup
 * `https://` requests now fail fast when no CA PEM, cert bundle, global CA store, or explicit insecure test mode is configured
-* `usePSRAMBuffers` affects ESPFetch-owned request/response string/header buffers; ArduinoJson `JsonDocument` allocations still follow ArduinoJson's own allocator behavior
+* `usePSRAMBuffers` affects ESPFetch-owned request/response string/header buffers and the streaming read buffer; ArduinoJson `JsonDocument` allocations still follow ArduinoJson's own allocator behavior
 * Installing `ESPBufferManager` is optional and only needed when you want PSRAM-backed ESPFetch-owned buffers
 
 ---

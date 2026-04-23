@@ -4,6 +4,7 @@
 #include <ArduinoJson.h>
 
 #include <atomic>
+#include <climits>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -27,6 +28,17 @@ struct FetchHeader {
 	std::string value;
 };
 
+enum class FetchTlsVersion {
+	Any,
+	Tls12,
+	Tls13,
+};
+
+enum class FetchTlsDynBufferStrategy {
+	Default,
+	RxStaticAfterHandshake,
+};
+
 struct FetchRequestOptions {
 	uint32_t timeoutMs = 0;
 	size_t maxBodyBytes = 0;
@@ -34,6 +46,9 @@ struct FetchRequestOptions {
 	size_t rxBufferSize = 0;
 	size_t txBufferSize = 0;
 	const char *caCertPem = nullptr;
+	std::optional<FetchTlsVersion> tlsVersion;
+	std::optional<FetchTlsDynBufferStrategy> tlsDynBufferStrategy;
+	std::optional<bool> usePSRAMBuffers;
 	std::optional<bool> useTlsCertBundle;
 	std::optional<bool> useGlobalCaStore;
 	std::optional<bool> skipTlsServerCertValidation;
@@ -55,6 +70,8 @@ struct FetchConfig {
 	size_t txBufferSize = 0;
 	TickType_t slotAcquireTicks = pdMS_TO_TICKS(0);
 	const char *caCertPem = nullptr;
+	FetchTlsVersion tlsVersion = FetchTlsVersion::Any;
+	FetchTlsDynBufferStrategy tlsDynBufferStrategy = FetchTlsDynBufferStrategy::Default;
 	bool useTlsCertBundle = true;
 	bool useGlobalCaStore = false;
 	bool skipTlsServerCertValidation = false;
@@ -83,11 +100,25 @@ struct ResolvedFetchTlsOptions {
 	bool skipServerCertValidationRequested = false;
 };
 
+struct ResolvedFetchTransportOptions {
+	ResolvedFetchTlsOptions tls;
+	FetchTlsVersion tlsVersion = FetchTlsVersion::Any;
+	FetchTlsDynBufferStrategy tlsDynBufferStrategy = FetchTlsDynBufferStrategy::Default;
+	int rxBufferSize = 0;
+	int txBufferSize = 0;
+	bool usePSRAMBuffers = false;
+};
+
 inline bool hasFetchCaCertPem(const char *certPem) {
 	return certPem != nullptr && certPem[0] != '\0';
 }
 
 inline bool resolveFetchTlsBool(const std::optional<bool> &requestValue, bool configValue) {
+	return requestValue.has_value() ? *requestValue : configValue;
+}
+
+template <typename T>
+inline T resolveFetchOption(const std::optional<T> &requestValue, T configValue) {
 	return requestValue.has_value() ? *requestValue : configValue;
 }
 
@@ -97,6 +128,25 @@ inline bool fetchCanSkipServerCertVerification() {
 #else
 	return false;
 #endif
+}
+
+inline bool fetchHasTlsDynamicBufferSupport() {
+#if defined(CONFIG_MBEDTLS_DYNAMIC_BUFFER)
+	return true;
+#else
+	return false;
+#endif
+}
+
+inline int resolveFetchHttpBufferSize(size_t requestValue, size_t configValue) {
+	const size_t selected = requestValue ? requestValue : configValue;
+	if (selected == 0) {
+		return 0;
+	}
+	if (selected > static_cast<size_t>(INT_MAX)) {
+		return INT_MAX;
+	}
+	return static_cast<int>(selected);
 }
 
 inline ResolvedFetchTlsOptions
@@ -144,20 +194,31 @@ resolveFetchTlsOptions(const FetchConfig &config, const FetchRequestOptions &req
 	return resolved;
 }
 
+inline ResolvedFetchTransportOptions
+resolveFetchTransportOptions(const FetchConfig &config, const FetchRequestOptions &requestOptions) {
+	ResolvedFetchTransportOptions resolved;
+	resolved.tls = resolveFetchTlsOptions(config, requestOptions);
+	resolved.tlsVersion = resolveFetchOption(requestOptions.tlsVersion, config.tlsVersion);
+	resolved.tlsDynBufferStrategy =
+	    resolveFetchOption(requestOptions.tlsDynBufferStrategy, config.tlsDynBufferStrategy);
+	resolved.rxBufferSize = resolveFetchHttpBufferSize(requestOptions.rxBufferSize, config.rxBufferSize);
+	resolved.txBufferSize = resolveFetchHttpBufferSize(requestOptions.txBufferSize, config.txBufferSize);
+	resolved.usePSRAMBuffers =
+	    resolveFetchTlsBool(requestOptions.usePSRAMBuffers, config.usePSRAMBuffers);
+	return resolved;
+}
+
 inline bool fetchUrlUsesHttps(const std::string &url) {
 	return url.size() >= 8 && (url[0] == 'h' || url[0] == 'H') && (url[1] == 't' || url[1] == 'T') &&
 	       (url[2] == 't' || url[2] == 'T') && (url[3] == 'p' || url[3] == 'P') &&
 	       (url[4] == 's' || url[4] == 'S') && url[5] == ':' && url[6] == '/' && url[7] == '/';
 }
 
-inline const char *validateFetchTlsOptions(
-    const std::string &url, const FetchConfig &config, const FetchRequestOptions &requestOptions
-) {
+inline const char *validateFetchTlsOptions(const std::string &url, const ResolvedFetchTlsOptions &resolved) {
 	if (!fetchUrlUsesHttps(url)) {
 		return nullptr;
 	}
 
-	const ResolvedFetchTlsOptions resolved = resolveFetchTlsOptions(config, requestOptions);
 	if (resolved.caCertPem != nullptr || resolved.useGlobalCaStore || resolved.useTlsCertBundle ||
 	    resolved.skipTlsServerCertValidation) {
 		return nullptr;
@@ -172,6 +233,37 @@ inline const char *validateFetchTlsOptions(
 	}
 
 	return "https requests require caCertPem, useTlsCertBundle, useGlobalCaStore, or skipTlsServerCertValidation";
+}
+
+inline const char *validateFetchTlsOptions(
+    const std::string &url, const FetchConfig &config, const FetchRequestOptions &requestOptions
+) {
+	const ResolvedFetchTlsOptions resolved = resolveFetchTlsOptions(config, requestOptions);
+	return validateFetchTlsOptions(url, resolved);
+}
+
+inline const char *
+validateFetchTransportOptions(const std::string &url, const ResolvedFetchTransportOptions &resolved) {
+	const char *tlsError = validateFetchTlsOptions(url, resolved.tls);
+	if (tlsError != nullptr) {
+		return tlsError;
+	}
+
+	if (fetchUrlUsesHttps(url) &&
+	    resolved.tlsDynBufferStrategy == FetchTlsDynBufferStrategy::RxStaticAfterHandshake &&
+	    !fetchHasTlsDynamicBufferSupport()) {
+		return "tlsDynBufferStrategy=RxStaticAfterHandshake requires CONFIG_MBEDTLS_DYNAMIC_BUFFER";
+	}
+
+	return nullptr;
+}
+
+inline const char *validateFetchTransportOptions(
+    const std::string &url, const FetchConfig &config, const FetchRequestOptions &requestOptions
+) {
+	const ResolvedFetchTransportOptions resolved =
+	    resolveFetchTransportOptions(config, requestOptions);
+	return validateFetchTransportOptions(url, resolved);
 }
 } // namespace esp_fetch_detail
 

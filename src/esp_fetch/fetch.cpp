@@ -195,6 +195,71 @@ int resolveHttpBufferSize(const char *label, size_t requestValue, size_t configV
 	return static_cast<int>(selected);
 }
 
+esp_fetch_detail::ResolvedFetchTransportOptions
+resolveFetchTransportOptionsForJob(const FetchConfig &config, const FetchRequestOptions &requestOptions) {
+	auto resolved = esp_fetch_detail::resolveFetchTransportOptions(config, requestOptions);
+	resolved.rxBufferSize =
+	    resolveHttpBufferSize("RX buffer size", requestOptions.rxBufferSize, config.rxBufferSize);
+	resolved.txBufferSize =
+	    resolveHttpBufferSize("TX buffer size", requestOptions.txBufferSize, config.txBufferSize);
+	return resolved;
+}
+
+esp_http_client_proto_ver_t mapFetchTlsVersion(FetchTlsVersion version) {
+	switch (version) {
+	case FetchTlsVersion::Tls12:
+		return ESP_HTTP_CLIENT_TLS_VER_TLS_1_2;
+	case FetchTlsVersion::Tls13:
+		return ESP_HTTP_CLIENT_TLS_VER_TLS_1_3;
+	case FetchTlsVersion::Any:
+	default:
+		return ESP_HTTP_CLIENT_TLS_VER_ANY;
+	}
+}
+
+const char *fetchTlsVersionToString(FetchTlsVersion version) {
+	switch (version) {
+	case FetchTlsVersion::Tls12:
+		return "TLS1.2";
+	case FetchTlsVersion::Tls13:
+		return "TLS1.3";
+	case FetchTlsVersion::Any:
+	default:
+		return "Any";
+	}
+}
+
+const char *fetchTlsDynBufferStrategyToString(FetchTlsDynBufferStrategy strategy) {
+	switch (strategy) {
+	case FetchTlsDynBufferStrategy::RxStaticAfterHandshake:
+		return "RxStaticAfterHandshake";
+	case FetchTlsDynBufferStrategy::Default:
+	default:
+		return "Default";
+	}
+}
+
+const char *fetchBufferPlacementToString(bool usePSRAMBuffers) {
+	return usePSRAMBuffers ? "PSRAM" : "internal";
+}
+
+void populateInternalFetchRequestOptions(
+    InternalFetchRequestOptions &target, const FetchRequestOptions &source
+) {
+	target.timeoutMs = source.timeoutMs;
+	target.maxBodyBytes = source.maxBodyBytes;
+	target.maxHeaderBytes = source.maxHeaderBytes;
+	target.rxBufferSize = source.rxBufferSize;
+	target.txBufferSize = source.txBufferSize;
+	target.caCertPem = source.caCertPem;
+	target.useTlsCertBundle = source.useTlsCertBundle;
+	target.useGlobalCaStore = source.useGlobalCaStore;
+	target.skipTlsServerCertValidation = source.skipTlsServerCertValidation;
+	target.skipTlsCommonNameCheck = source.skipTlsCommonNameCheck;
+	target.allowRedirects = source.allowRedirects;
+	target.contentType = source.contentType;
+}
+
 template <typename Callback, typename... Args>
 void invokeFetchCallback(const Callback &callback, Args... args) noexcept {
 	if (!callback) {
@@ -297,9 +362,10 @@ struct ESPFetch::SyncHandle {
 };
 
 struct ESPFetch::FetchJob {
-	explicit FetchJob(bool usePSRAMBuffers = false)
-	    : stringAllocator(usePSRAMBuffers), url(stringAllocator), body(stringAllocator),
-	      requestOptions(usePSRAMBuffers), response(usePSRAMBuffers) {
+	explicit FetchJob(const esp_fetch_detail::ResolvedFetchTransportOptions &resolvedTransport)
+	    : stringAllocator(resolvedTransport.usePSRAMBuffers), url(stringAllocator),
+	      body(stringAllocator), requestOptions(resolvedTransport.usePSRAMBuffers),
+	      response(resolvedTransport.usePSRAMBuffers), transport(resolvedTransport) {
 	}
 
 	ESPFetch *owner = nullptr;
@@ -319,6 +385,7 @@ struct ESPFetch::FetchJob {
 
 	// Response bookkeeping
 	FetchResponse response;
+	esp_fetch_detail::ResolvedFetchTransportOptions transport;
 
 	// Stream mode (new APIs)
 	bool isStream = false;
@@ -607,12 +674,13 @@ bool ESPFetch::enqueueRequest(
 	}
 
 	const std::string normalizedUrl = normalizeUrl(url);
-	const char *tlsError =
-	    esp_fetch_detail::validateFetchTlsOptions(normalizedUrl, _config, options);
-	if (tlsError != nullptr) {
-		ESP_LOGE(TAG, "Rejected request for %s: %s", normalizedUrl.c_str(), tlsError);
+	const auto resolvedTransport = resolveFetchTransportOptionsForJob(_config, options);
+	const char *transportError =
+	    esp_fetch_detail::validateFetchTransportOptions(normalizedUrl, resolvedTransport);
+	if (transportError != nullptr) {
+		ESP_LOGE(TAG, "Rejected request for %s: %s", normalizedUrl.c_str(), transportError);
 		if (startErrorOut != nullptr) {
-			*startErrorOut = tlsError;
+			*startErrorOut = transportError;
 		}
 		return false;
 	}
@@ -625,23 +693,12 @@ bool ESPFetch::enqueueRequest(
 		return false;
 	}
 
-	auto job = std::make_unique<FetchJob>(_config.usePSRAMBuffers);
+	auto job = std::make_unique<FetchJob>(resolvedTransport);
 	job->owner = this;
 	job->url.assign(normalizedUrl.c_str(), normalizedUrl.size());
 	job->method = method;
 	job->body = std::move(body);
-	job->requestOptions.timeoutMs = options.timeoutMs;
-	job->requestOptions.maxBodyBytes = options.maxBodyBytes;
-	job->requestOptions.maxHeaderBytes = options.maxHeaderBytes;
-	job->requestOptions.rxBufferSize = options.rxBufferSize;
-	job->requestOptions.txBufferSize = options.txBufferSize;
-	job->requestOptions.caCertPem = options.caCertPem;
-	job->requestOptions.useTlsCertBundle = options.useTlsCertBundle;
-	job->requestOptions.useGlobalCaStore = options.useGlobalCaStore;
-	job->requestOptions.skipTlsServerCertValidation = options.skipTlsServerCertValidation;
-	job->requestOptions.skipTlsCommonNameCheck = options.skipTlsCommonNameCheck;
-	job->requestOptions.allowRedirects = options.allowRedirects;
-	job->requestOptions.contentType = options.contentType;
+	populateInternalFetchRequestOptions(job->requestOptions, options);
 	job->requestOptions.headers.clear();
 	job->requestOptions.headers.reserve(options.headers.size());
 	for (const auto &header : options.headers) {
@@ -728,12 +785,18 @@ bool ESPFetch::enqueueStreamRequest(
 	}
 
 	const std::string normalizedUrl = normalizeUrl(url);
-	const char *tlsError =
-	    esp_fetch_detail::validateFetchTlsOptions(normalizedUrl, _config, options);
-	if (tlsError != nullptr) {
-		ESP_LOGE(TAG, "Rejected stream request for %s: %s", normalizedUrl.c_str(), tlsError);
+	const auto resolvedTransport = resolveFetchTransportOptionsForJob(_config, options);
+	const char *transportError =
+	    esp_fetch_detail::validateFetchTransportOptions(normalizedUrl, resolvedTransport);
+	if (transportError != nullptr) {
+		ESP_LOGE(
+		    TAG,
+		    "Rejected stream request for %s: %s",
+		    normalizedUrl.c_str(),
+		    transportError
+		);
 		if (startErrorOut != nullptr) {
-			*startErrorOut = tlsError;
+			*startErrorOut = transportError;
 		}
 		return false;
 	}
@@ -746,22 +809,11 @@ bool ESPFetch::enqueueStreamRequest(
 		return false;
 	}
 
-	auto job = std::make_unique<FetchJob>(_config.usePSRAMBuffers);
+	auto job = std::make_unique<FetchJob>(resolvedTransport);
 	job->owner = this;
 	job->url.assign(normalizedUrl.c_str(), normalizedUrl.size());
 	job->method = HTTP_METHOD_GET;
-	job->requestOptions.timeoutMs = options.timeoutMs;
-	job->requestOptions.maxBodyBytes = options.maxBodyBytes;
-	job->requestOptions.maxHeaderBytes = options.maxHeaderBytes;
-	job->requestOptions.rxBufferSize = options.rxBufferSize;
-	job->requestOptions.txBufferSize = options.txBufferSize;
-	job->requestOptions.caCertPem = options.caCertPem;
-	job->requestOptions.useTlsCertBundle = options.useTlsCertBundle;
-	job->requestOptions.useGlobalCaStore = options.useGlobalCaStore;
-	job->requestOptions.skipTlsServerCertValidation = options.skipTlsServerCertValidation;
-	job->requestOptions.skipTlsCommonNameCheck = options.skipTlsCommonNameCheck;
-	job->requestOptions.allowRedirects = options.allowRedirects;
-	job->requestOptions.contentType = options.contentType;
+	populateInternalFetchRequestOptions(job->requestOptions, options);
 	job->requestOptions.headers.clear();
 	job->requestOptions.headers.reserve(options.headers.size());
 	for (const auto &header : options.headers) {
@@ -924,41 +976,30 @@ void ESPFetch::runJob(std::unique_ptr<FetchJob> job) {
 	if (_teardownRequested.load(std::memory_order_acquire)) {
 		job->response.error = ESP_ERR_INVALID_STATE;
 	} else {
-		FetchRequestOptions requestTlsOptions;
-		requestTlsOptions.caCertPem = job->requestOptions.caCertPem;
-		requestTlsOptions.useTlsCertBundle = job->requestOptions.useTlsCertBundle;
-		requestTlsOptions.useGlobalCaStore = job->requestOptions.useGlobalCaStore;
-		requestTlsOptions.skipTlsServerCertValidation =
-		    job->requestOptions.skipTlsServerCertValidation;
-		requestTlsOptions.skipTlsCommonNameCheck = job->requestOptions.skipTlsCommonNameCheck;
-		const esp_fetch_detail::ResolvedFetchTlsOptions tlsOptions =
-		    esp_fetch_detail::resolveFetchTlsOptions(_config, requestTlsOptions);
-
 		esp_http_client_config_t config = {};
 		config.url = job->url.c_str();
 		config.method = job->method;
 		config.timeout_ms = job->requestOptions.timeoutMs ? job->requestOptions.timeoutMs
 		                                                  : _config.defaultTimeoutMs;
-		config.buffer_size = resolveHttpBufferSize(
-		    "RX buffer size",
-		    job->requestOptions.rxBufferSize,
-		    _config.rxBufferSize
-		);
-		config.buffer_size_tx = resolveHttpBufferSize(
-		    "TX buffer size",
-		    job->requestOptions.txBufferSize,
-		    _config.txBufferSize
-		);
+		config.buffer_size = job->transport.rxBufferSize;
+		config.buffer_size_tx = job->transport.txBufferSize;
 		config.event_handler = &ESPFetch::handleHttpEvent;
 		config.user_data = job.get();
 		config.disable_auto_redirect =
 		    !(job->requestOptions.allowRedirects && _config.followRedirects);
-		config.cert_pem = tlsOptions.caCertPem;
-		config.use_global_ca_store = tlsOptions.useGlobalCaStore;
-		config.skip_cert_common_name_check = tlsOptions.skipTlsCommonNameCheck;
+		config.cert_pem = job->transport.tls.caCertPem;
+		config.use_global_ca_store = job->transport.tls.useGlobalCaStore;
+		config.skip_cert_common_name_check = job->transport.tls.skipTlsCommonNameCheck;
+		config.tls_version = mapFetchTlsVersion(job->transport.tlsVersion);
 #if ESP_FETCH_HAVE_CRT_BUNDLE
-		if (tlsOptions.useTlsCertBundle) {
+		if (job->transport.tls.useTlsCertBundle) {
 			config.crt_bundle_attach = esp_crt_bundle_attach;
+		}
+#endif
+#if defined(CONFIG_MBEDTLS_DYNAMIC_BUFFER)
+		if (job->transport.tlsDynBufferStrategy ==
+		    FetchTlsDynBufferStrategy::RxStaticAfterHandshake) {
+			config.tls_dyn_buf_strategy = HTTP_TLS_DYN_BUF_RX_STATIC;
 		}
 #endif
 
@@ -1005,15 +1046,15 @@ void ESPFetch::runJob(std::unique_ptr<FetchJob> job) {
 					job->response.statusCode = esp_http_client_get_status_code(client);
 				}
 			} else {
-				const int configuredReadBufferSize = resolveHttpBufferSize(
-				    "Stream read buffer size",
-				    job->requestOptions.rxBufferSize,
-				    _config.rxBufferSize
-				);
+				const int configuredReadBufferSize = job->transport.rxBufferSize;
 				const size_t readBufferSize = configuredReadBufferSize > 0
 				                                  ? static_cast<size_t>(configuredReadBufferSize)
 				                                  : STREAM_READ_BUFFER_SIZE_FALLBACK_BYTES;
-				std::vector<char> readBuffer(readBufferSize);
+				FetchVector<char> readBuffer(
+				    readBufferSize,
+				    '\0',
+				    FetchAllocator<char>(job->transport.usePSRAMBuffers)
+				);
 				bool retryRequest = false;
 				do {
 					retryRequest = false;
@@ -1067,6 +1108,17 @@ void ESPFetch::runJob(std::unique_ptr<FetchJob> job) {
 						}
 						continue;
 					}
+
+					ESP_LOGI(
+					    TAG,
+					    "Stream transport for %s: tlsVersion=%s tlsDynBufferStrategy=%s rxBuffer=%d txBuffer=%d placement=%s",
+					    job->url.c_str(),
+					    fetchTlsVersionToString(job->transport.tlsVersion),
+					    fetchTlsDynBufferStrategyToString(job->transport.tlsDynBufferStrategy),
+					    job->transport.rxBufferSize,
+					    job->transport.txBufferSize,
+					    fetchBufferPlacementToString(job->transport.usePSRAMBuffers)
+					);
 
 					if (job->onStart && !invokeFetchStartCallback(job->onStart, startInfo)) {
 						job->streamStartRejected = true;
